@@ -11,9 +11,9 @@ ECHO Regenerate CMake? (will continue without regenerating in 3s)
 CHOICE /C YN /T 3 /D N /M "Press Y for Yes or N for No"
 
 IF ERRORLEVEL 2 (
-    echo n| call "%SCRIPT_DIR%\tools\scripts\BuildHyperion_ARM64.bat" %*
+    echo n| call "%SCRIPT_DIR%\tools\scripts\BuildHyperion_ARM64ec.bat" %*
 ) ELSE (
-    echo y| call "%SCRIPT_DIR%\tools\scripts\BuildHyperion_ARM64.bat" %*
+    echo y| call "%SCRIPT_DIR%\tools\scripts\BuildHyperion_ARM64ec.bat" %*
 )
 
 pause

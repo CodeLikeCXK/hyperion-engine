@@ -36,9 +36,14 @@ static Array<String> CreatePlatformStackTrace(uint32 depth, uint32 offset)
     stackFrame.AddrPC.Mode = AddrModeFlat;
     stackFrame.AddrFrame.Mode = AddrModeFlat;
     stackFrame.AddrStack.Mode = AddrModeFlat;
-    stackFrame.AddrPC.Offset = context.Rip;
-    stackFrame.AddrFrame.Offset = context.Rbp;
-    stackFrame.AddrStack.Offset = context.Rsp;
+//replace with arm64ec defines
+    //stackFrame.AddrPC.Offset = context.Rip;
+    //stackFrame.AddrFrame.Offset = context.Rbp;
+    //stackFrame.AddrStack.Offset = context.Rsp;
+
+    stackFrame.AddrPC.Offset = context.Pc;
+    stackFrame.AddrFrame.Offset = context.Fp;
+    stackFrame.AddrStack.Offset = context.Sp;
 
     DWORD machineType = IMAGE_FILE_MACHINE_AMD64;
     uint32 index = 0;

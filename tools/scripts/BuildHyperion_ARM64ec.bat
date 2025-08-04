@@ -19,7 +19,7 @@ IF NOT DEFINED VCPKG_ROOT (
     exit /b 1
 )
 
-cmake .. -DCMAKE_TOOLCHAIN_FILE="%VCPKG_ROOT%/scripts/buildsystems/vcpkg.cmake" -DVCPKG_DEFAULT_TRIPLET=arm64-windows -DCMAKE_BUILD_TYPE=Release -G "Visual Studio 17 2022" -A arm64 -DCURL_INCLUDE_DIRS=
+cmake .. -DCMAKE_TOOLCHAIN_FILE="%VCPKG_ROOT%/scripts/buildsystems/vcpkg.cmake" -DVCPKG_DEFAULT_TRIPLET=arm64-windows -DCMAKE_BUILD_TYPE=Release -G "Visual Studio 17 2022" -A arm64ec -DCURL_INCLUDE_DIRS=
 
 :SKIP_CMAKE_GENERATION
 
