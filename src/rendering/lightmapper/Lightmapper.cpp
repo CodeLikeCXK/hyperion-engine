@@ -40,6 +40,8 @@
 #include <scene/components/TransformComponent.hpp>
 #include <scene/components/BoundingBoxComponent.hpp>
 
+#include <core/object/HypClass.hpp>
+
 #include <core/threading/TaskSystem.hpp>
 #include <core/threading/TaskThread.hpp>
 
@@ -69,13 +71,13 @@ struct RENDER_COMMAND(LightmapRender)
     : RenderCommand
 {
     LightmapJob* job;
-    View* view;
+    WeakHandle<View> viewWeak;
     Array<LightmapRay> rays;
     uint32 rayOffset;
 
-    RENDER_COMMAND(LightmapRender)(LightmapJob* job, View* view, Array<LightmapRay>&& rays, uint32 rayOffset)
+    RENDER_COMMAND(LightmapRender)(LightmapJob* job, const WeakHandle<View>& viewWeak, Array<LightmapRay>&& rays, uint32 rayOffset)
         : job(job),
-          view(view),
+          viewWeak(viewWeak),
           rays(std::move(rays)),
           rayOffset(rayOffset)
     {
@@ -89,6 +91,13 @@ struct RENDER_COMMAND(LightmapRender)
 
     virtual RendererResult operator()() override
     {
+        Handle<View> view = viewWeak.Lock();
+        if (!view)
+        {
+            HYP_LOG(Lightmap, Error, "Lightmapper View was expired when attempting to render lightmap");
+            return {};
+        }
+
         FrameBase* frame = g_renderBackend->GetCurrentFrame();
 
         RenderSetup renderSetup { g_engine->GetWorld(), view };
@@ -125,10 +134,12 @@ struct RENDER_COMMAND(LightmapRender)
             {
                 Array<LightmapHit> hitsBuffer;
                 hitsBuffer.Resize(previousRays.Size());
+                
+                AssertDebug(job->GetParams().renderers != nullptr);
 
-                for (ILightmapRenderer* lightmapRenderer : job->GetParams().renderers)
+                for (UniquePtr<ILightmapRenderer>& lightmapRenderer : *job->GetParams().renderers)
                 {
-                    Assert(lightmapRenderer != nullptr);
+                    AssertDebug(lightmapRenderer != nullptr);
 
                     lightmapRenderer->ReadHitsBuffer(frame, hitsBuffer);
 
@@ -141,9 +152,11 @@ struct RENDER_COMMAND(LightmapRender)
 
         if (rays.Any())
         {
-            for (ILightmapRenderer* lightmapRenderer : job->GetParams().renderers)
+            AssertDebug(job->GetParams().renderers != nullptr);
+
+            for (UniquePtr<ILightmapRenderer>& lightmapRenderer : *job->GetParams().renderers)
             {
-                Assert(lightmapRenderer != nullptr);
+                AssertDebug(lightmapRenderer != nullptr);
 
                 lightmapRenderer->Render(frame, renderSetup, job, rays, rayOffset);
             }
@@ -183,36 +196,6 @@ LightmapJob::LightmapJob(LightmapJobParams&& params)
       m_lastLoggedPercentage(0),
       numConcurrentRenderingTasks(0)
 {
-
-    Handle<Camera> camera = CreateObject<Camera>();
-    camera->SetName(NAME_FMT("LightmapJob_{}_Camera", m_uuid));
-    camera->AddCameraController(CreateObject<OrthoCameraController>());
-    InitObject(camera);
-
-    // dummy output target
-    ViewOutputTargetDesc outputTargetDesc {
-        .extent = Vec2u::One(),
-        .attachments = { { TF_R8 } }
-    };
-
-    ViewDesc viewDesc {
-        .flags = ViewFlags::COLLECT_STATIC_ENTITIES
-            | ViewFlags::NO_FRUSTUM_CULLING
-            | ViewFlags::SKIP_ENV_GRIDS | ViewFlags::SKIP_LIGHTMAP_VOLUMES
-            | ViewFlags::RAYTRACING
-            | ViewFlags::NO_DRAW_CALLS,
-        .viewport = Viewport { .extent = Vec2u::One(), .position = Vec2i::Zero() },
-        .outputTargetDesc = outputTargetDesc,
-        .scenes = { m_params.scene },
-        .camera = camera
-    };
-
-    m_view = CreateObject<View>(viewDesc);
-    InitObject(m_view);
-
-    HYP_LOG_TEMP("Created View {} for Lightmaper : Num meshes collected : {}",
-        m_view->Id(),
-        m_view->GetRenderProxyList(0)->GetMeshEntities().NumCurrent());
 }
 
 LightmapJob::~LightmapJob()
@@ -282,9 +265,6 @@ void LightmapJob::Process()
 {
     Assert(IsRunning());
     Assert(!m_result.HasError(), "Unhandled error in lightmap job: {}", *m_result.GetError().GetMessage());
-
-    m_view->UpdateVisibility();
-    m_view->CollectSync();
 
     if (numConcurrentRenderingTasks.Get(MemoryOrder::ACQUIRE) >= g_maxConcurrentRenderingTasksPerJob)
     {
@@ -404,7 +384,12 @@ void LightmapJob::Process()
         return;
     }
 
-    const SizeType maxRays = MathUtil::Min(m_params.renderers[0]->MaxRaysPerFrame(), m_params.config->maxRaysPerFrame);
+    AssertDebug(m_params.renderers != nullptr);
+    Array<UniquePtr<ILightmapRenderer>>& lightmapRenderers = *m_params.renderers;
+
+    AssertDebug(lightmapRenderers[0] != nullptr);
+
+    const SizeType maxRays = MathUtil::Min(lightmapRenderers[0]->MaxRaysPerFrame(), m_params.config->maxRaysPerFrame);
 
     Array<LightmapRay> rays;
     rays.Reserve(maxRays);
@@ -413,9 +398,9 @@ void LightmapJob::Process()
 
     const uint32 rayOffset = uint32(m_texelIndex % (m_texelIndices.Size() * m_params.config->numSamples));
 
-    for (ILightmapRenderer* lightmapRenderer : m_params.renderers)
+    for (UniquePtr<ILightmapRenderer>& lightmapRenderer : lightmapRenderers)
     {
-        Assert(lightmapRenderer != nullptr);
+        AssertDebug(lightmapRenderer != nullptr);
 
         lightmapRenderer->UpdateRays(rays);
     }
@@ -430,7 +415,7 @@ void LightmapJob::Process()
         m_lastLoggedPercentage = percentage;
     }
 
-    PUSH_RENDER_COMMAND(LightmapRender, this, m_view, std::move(rays), rayOffset);
+    PUSH_RENDER_COMMAND(LightmapRender, this, m_params.view, std::move(rays), rayOffset);
 }
 
 void LightmapJob::GatherRays(uint32 maxRayHits, Array<LightmapRay>& outRays)
@@ -490,6 +475,12 @@ Lightmapper::~Lightmapper()
     m_lightmapRenderers = {};
 
     m_queue.Clear();
+    
+    if (m_view != nullptr)
+    {
+        m_scene->GetWorld()->RemoveView(m_view);
+        m_view.Reset();
+    }
 }
 
 bool Lightmapper::IsComplete() const
@@ -500,6 +491,51 @@ bool Lightmapper::IsComplete() const
 void Lightmapper::Initialize()
 {
     HYP_LOG(Lightmap, Info, "Initializing lightmapper: {}", m_config.ToString());
+  
+    Handle<Camera> camera = CreateObject<Camera>();
+    camera->SetName(NAME_FMT("{}_Camera", InstanceClass()->GetName()));
+    camera->AddCameraController(CreateObject<OrthoCameraController>());
+    InitObject(camera);
+
+    // dummy output target
+    ViewOutputTargetDesc outputTargetDesc {
+        .extent = Vec2u::One(),
+        .attachments = { { TF_R8 } }
+    };
+
+    ViewDesc viewDesc {
+        .flags = ViewFlags::COLLECT_STATIC_ENTITIES
+            | ViewFlags::NO_FRUSTUM_CULLING
+            | ViewFlags::SKIP_ENV_GRIDS | ViewFlags::SKIP_LIGHTMAP_VOLUMES
+            | ViewFlags::RAYTRACING
+            | ViewFlags::NO_DRAW_CALLS,
+        .viewport = Viewport { .extent = Vec2u::One(), .position = Vec2i::Zero() },
+        .outputTargetDesc = outputTargetDesc,
+        .scenes = { m_scene },
+        .camera = camera
+    };
+
+    m_view = CreateObject<View>(viewDesc);
+    InitObject(m_view);
+
+    HYP_LOG_TEMP("Created View {} for Lightmaper : Num meshes collected : {}",
+        m_view->Id(),
+        m_view->GetRenderProxyList(0)->GetMeshEntities().NumCurrent());
+
+    m_volume = CreateObject<LightmapVolume>(m_aabb);
+    InitObject(m_volume);
+
+    Handle<Entity> lightmapVolumeEntity = m_scene->GetEntityManager()->AddEntity();
+    m_scene->GetEntityManager()->AddComponent<LightmapVolumeComponent>(lightmapVolumeEntity, LightmapVolumeComponent { m_volume });
+    m_scene->GetEntityManager()->AddComponent<BoundingBoxComponent>(lightmapVolumeEntity, BoundingBoxComponent { m_aabb, m_aabb });
+
+    Handle<Node> lightmapVolumeNode = m_scene->GetRoot()->AddChild();
+    lightmapVolumeNode->SetName(Name::Unique("LightmapVolume"));
+    lightmapVolumeNode->SetEntity(lightmapVolumeEntity);
+    
+    Initialize_Internal();
+
+    Build();
 
     for (uint32 i = 0; i < uint32(LightmapShadingType::MAX); i++)
     {
@@ -535,39 +571,21 @@ void Lightmapper::Initialize()
     }
 
     Assert(m_lightmapRenderers.Any());
-
-    m_volume = CreateObject<LightmapVolume>(m_aabb);
-    InitObject(m_volume);
-
-    Handle<Entity> lightmapVolumeEntity = m_scene->GetEntityManager()->AddEntity();
-    m_scene->GetEntityManager()->AddComponent<LightmapVolumeComponent>(lightmapVolumeEntity, LightmapVolumeComponent { m_volume });
-    m_scene->GetEntityManager()->AddComponent<BoundingBoxComponent>(lightmapVolumeEntity, BoundingBoxComponent { m_aabb, m_aabb });
-
-    Handle<Node> lightmapVolumeNode = m_scene->GetRoot()->AddChild();
-    lightmapVolumeNode->SetName(Name::Unique("LightmapVolume"));
-    lightmapVolumeNode->SetEntity(lightmapVolumeEntity);
-    
-    Initialize_Internal();
 }
 
-LightmapJobParams Lightmapper::CreateLightmapJobParams(
-    SizeType startIndex,
-    SizeType endIndex)
+LightmapJobParams Lightmapper::CreateLightmapJobParams(SizeType startIndex, SizeType endIndex)
 {
+    AssertDebug(m_volume != nullptr);
+
     LightmapJobParams jobParams {
         &m_config,
         m_scene,
         m_volume,
+        m_view,
         m_subElements.ToSpan().Slice(startIndex, endIndex - startIndex),
-        &m_subElementsByEntity
+        &m_subElementsByEntity,
+        &m_lightmapRenderers
     };
-
-    jobParams.renderers.Resize(m_lightmapRenderers.Size());
-
-    for (SizeType i = 0; i < m_lightmapRenderers.Size(); i++)
-    {
-        jobParams.renderers[i] = m_lightmapRenderers[i].Get();
-    }
 
     return jobParams;
 }
@@ -609,19 +627,6 @@ void Lightmapper::Build()
             HYP_LOG(Lightmap, Info, "Skip entity with bucket that is not opaque or translucent");
 
             continue;
-        }
-
-        if (m_config.traceMode == LightmapTraceMode::GPU_PATH_TRACING)
-        {
-            HYP_NOT_IMPLEMENTED();
-            // FIXME!!
-
-            /*if (!meshComponent.raytracingData)
-            {
-                HYP_LOG(Lightmap, Info, "Skipping Entity {} because it has no raytracing data set", entity->Id());
-
-                continue;
-            }*/
         }
 
         m_subElements.PushBack(LightmapSubElement {
@@ -668,6 +673,10 @@ void Lightmapper::Build()
 void Lightmapper::Update(float delta)
 {
     HYP_SCOPE;
+    
+    m_view->UpdateVisibility();
+    m_view->CollectSync();
+
     uint32 numJobs = m_numJobs.Get(MemoryOrder::ACQUIRE);
 
     Mutex::Guard guard(m_queueMutex);
@@ -693,8 +702,6 @@ void Lightmapper::HandleCompletedJob(LightmapJob* job)
 {
     HYP_SCOPE;
     Threads::AssertOnThread(g_gameThread);
-
-    m_scene->GetWorld()->RemoveView(job->GetView());
 
     if (job->GetResult().HasError())
     {

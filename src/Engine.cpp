@@ -205,7 +205,6 @@ HYP_API void Engine::Init()
     Assert(m_appContext != nullptr, "App context must be set before initializing the engine!");
 
     m_renderThread = MakeUnique<RenderThread>(m_appContext);
-    RenderApi_Init();
 
     Assert(m_appContext->GetMainWindow() != nullptr);
 
@@ -239,7 +238,7 @@ HYP_API void Engine::Init()
     m_scriptingService = MakeUnique<ScriptingService>(
         GetResourceDirectory() / "scripts" / "src",
         GetResourceDirectory() / "scripts" / "projects",
-        GetResourceDirectory() / "scripts" / "bin");
+        GetExecutablePath()); // copy script binaries into executable path
 
     m_scriptingService->Start();
 #endif

@@ -201,7 +201,7 @@ void HyperionEditor::Init()
         Color(Vec4f(1.0f, 0.9f, 0.8f, 1.0f)),
         5.0f);
 
-    sunEntity->Attach(sunNode);
+    sunEntity->AttachTo(sunNode);
 #endif
 
     // Add Skybox
@@ -234,7 +234,7 @@ void HyperionEditor::Init()
             {
                 Handle<Node> node = results["test_model"].ExtractAs<Node>();
 
-                node->Scale(0.05f);
+                node->Scale(0.03f);
                 node->SetName(NAME("test_model"));
                 node->LockTransform();
 

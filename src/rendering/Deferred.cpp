@@ -38,6 +38,8 @@
 #include <scene/EnvGrid.hpp>
 #include <scene/EnvProbe.hpp>
 
+#include <core/config/Config.hpp>
+
 #include <core/profiling/ProfileScope.hpp>
 
 #include <core/filesystem/FsUtil.hpp>
@@ -80,26 +82,28 @@ static const Float16 g_ltcBrdf[] = {
 
 static_assert(sizeof(g_ltcBrdf) == 64 * 64 * 4 * 2, "Invalid LTC BRDF size");
 
+HYP_API extern const GlobalConfig& GetGlobalConfig();
+
 void GetDeferredShaderProperties(ShaderProperties& outShaderProperties)
 {
-    const GlobalConfig& appConfig = g_engine->GetAppContext()->GetConfiguration();
-    const IRenderConfig& renderConfig = g_renderBackend->GetRenderConfig();
+    static const GlobalConfig& globalConfig = GetGlobalConfig();
+    static const IRenderConfig& renderConfig = g_renderBackend->GetRenderConfig();
 
-    outShaderProperties.Set(NAME("RT_REFLECTIONS_ENABLED"), renderConfig.IsRaytracingSupported() && appConfig.Get("rendering.raytracing.reflections.enabled").ToBool());
-    outShaderProperties.Set(NAME("RT_GI_ENABLED"), renderConfig.IsRaytracingSupported() && appConfig.Get("rendering.raytracing.globalIllumination.enabled").ToBool());
-    outShaderProperties.Set(NAME("ENV_GRID_ENABLED"), appConfig.Get("rendering.envGrid.globalIllumination.enabled").ToBool());
-    outShaderProperties.Set(NAME("HBIL_ENABLED"), appConfig.Get("rendering.hbil.enabled").ToBool());
-    outShaderProperties.Set(NAME("HBAO_ENABLED"), appConfig.Get("rendering.hbao.enabled").ToBool());
+    outShaderProperties.Set(NAME("RT_REFLECTIONS_ENABLED"), renderConfig.IsRaytracingSupported() && globalConfig.Get("rendering.raytracing.reflections.enabled").ToBool());
+    outShaderProperties.Set(NAME("RT_GI_ENABLED"), renderConfig.IsRaytracingSupported() && globalConfig.Get("rendering.raytracing.globalIllumination.enabled").ToBool());
+    outShaderProperties.Set(NAME("ENV_GRID_ENABLED"), globalConfig.Get("rendering.envGrid.globalIllumination.enabled").ToBool());
+    outShaderProperties.Set(NAME("HBIL_ENABLED"), globalConfig.Get("rendering.hbil.enabled").ToBool());
+    outShaderProperties.Set(NAME("HBAO_ENABLED"), globalConfig.Get("rendering.hbao.enabled").ToBool());
 
-    if (appConfig.Get("rendering.raytracing.pathTracing.enabled").ToBool())
+    if (globalConfig.Get("rendering.raytracing.pathTracing.enabled").ToBool())
     {
         outShaderProperties.Set(NAME("PATHTRACER"));
     }
-    else if (appConfig.Get("rendering.debug.reflections").ToBool())
+    else if (globalConfig.Get("rendering.debug.reflections").ToBool())
     {
         outShaderProperties.Set(NAME("DEBUG_REFLECTIONS"));
     }
-    else if (appConfig.Get("rendering.debug.irradiance").ToBool())
+    else if (globalConfig.Get("rendering.debug.irradiance").ToBool())
     {
         outShaderProperties.Set(NAME("DEBUG_IRRADIANCE"));
     }
@@ -745,8 +749,10 @@ void ReflectionsPass::CreatePipeline(const RenderableAttributeSet& renderableAtt
 
 bool ReflectionsPass::ShouldRenderSSR() const
 {
-    return g_engine->GetAppContext()->GetConfiguration().Get("rendering.ssr.enabled").ToBool(true)
-        && !g_engine->GetAppContext()->GetConfiguration().Get("rendering.raytracing.reflections.enabled").ToBool(false);
+    static const ConfigurationValue& ssrEnabled = GetGlobalConfig().Get("rendering.ssr.enabled");
+    static const ConfigurationValue& raytracingReflectionsEnabled = GetGlobalConfig().Get("rendering.raytracing.reflections.enabled");
+    
+    return ssrEnabled.ToBool(true) && !raytracingReflectionsEnabled.ToBool(false);
 }
 
 void ReflectionsPass::CreateSSRRenderer()
@@ -1105,8 +1111,6 @@ Handle<PassData> DeferredRenderer::CreateViewPassData(View* view, PassDataExt&)
 
         pd->view = view->WeakHandleFromThis();
         pd->viewport = view->GetViewport();
-        
-        CreateViewTopLevelAccelerationStructures(view, *pd);
 
         return pd;
     }
@@ -1310,7 +1314,7 @@ void DeferredRenderer::CreateViewRaytracingPasses(View* view, DeferredPassData& 
     }
 
     const bool shouldEnableRaytracingForView = view->GetRaytracingView().IsValid()
-        && g_engine->GetAppContext()->GetConfiguration().Get("rendering.raytracing.enabled").ToBool();
+        && GetGlobalConfig().Get("rendering.raytracing.enabled").ToBool();
 
     if (!shouldEnableRaytracingForView)
     {
@@ -1335,13 +1339,12 @@ void DeferredRenderer::CreateViewTopLevelAccelerationStructures(View* view, Rayt
 {
     SafeRelease(std::move(passData.raytracingTlases));
 
-    // @FIXME: Hack solution since TLAS can only be created if it has a non-zero number of BLASes.
-    // This whole thing should be reworked
+    // Hack to fix driver crash when building TLAS with no meshes
     Handle<Mesh> defaultMesh = MeshBuilder::Cube();
     InitObject(defaultMesh);
 
     BLASRef blas = MeshBlasBuilder::Build(defaultMesh);
-    DeferCreate(blas);
+    HYP_GFX_ASSERT(blas->Create());
 
     for (uint32 frameIndex = 0; frameIndex < g_framesInFlight; frameIndex++)
     {
@@ -1350,7 +1353,7 @@ void DeferredRenderer::CreateViewTopLevelAccelerationStructures(View* view, Rayt
         tlas = g_renderBackend->MakeTLAS();
         tlas->AddBLAS(blas);
 
-        DeferCreate(tlas);
+        HYP_GFX_ASSERT(tlas->Create());
     }
 }
 
@@ -1651,10 +1654,11 @@ void DeferredRenderer::RenderFrame(FrameBase* frame, const RenderSetup& rs)
 
 #ifdef HYP_ENABLE_RENDER_STATS
         RenderProxyList& rpl = RenderApi_GetConsumerProxyList(view);
-        rpl.BeginRead();
-        HYP_DEFER({ rpl.EndRead(); });
+        // RenderProxyList already be in read state (see above)
 
         counts[ERS_VIEWS]++;
+        counts[ERS_TEXTURES] += rpl.GetTextures().NumCurrent();
+        counts[ERS_MATERIALS] += rpl.GetMaterials().NumCurrent();
         counts[ERS_LIGHTMAP_VOLUMES] += rpl.GetLightmapVolumes().NumCurrent();
         counts[ERS_LIGHTS] += rpl.GetLights().NumCurrent();
         counts[ERS_ENV_GRIDS] += rpl.GetEnvGrids().NumCurrent();
@@ -1822,25 +1826,28 @@ void DeferredRenderer::RenderFrameForView(FrameBase* frame, const RenderSetup& r
             const Handle<RaytracingPassData>& raytracingPassData = ObjCast<RaytracingPassData>(FetchViewPassData(raytracingView));
             Assert(raytracingPassData != nullptr);
 
-            raytracingPassData->parentPass = pd;
-
-            RenderSetup newRs = rs;
-            newRs.passData = raytracingPassData;
-
-            if (useRaytracingReflections)
+            if (raytracingPassData->raytracingTlases[frameIndex] != nullptr)
             {
-                AssertDebug(pd->raytracingReflections != nullptr);
-                pd->raytracingReflections->Render(frame, newRs);
-            }
+                raytracingPassData->parentPass = pd;
 
-            if (useRaytracingGlobalIllumination)
-            {
-                AssertDebug(pd->ddgi != nullptr);
-                pd->ddgi->Render(frame, newRs);
-            }
+                RenderSetup newRs = rs;
+                newRs.passData = raytracingPassData;
 
-            // unset parent pass after using it
-            raytracingPassData->parentPass = nullptr;
+                if (useRaytracingReflections)
+                {
+                    AssertDebug(pd->raytracingReflections != nullptr);
+                    pd->raytracingReflections->Render(frame, newRs);
+                }
+
+                if (useRaytracingGlobalIllumination)
+                {
+                    AssertDebug(pd->ddgi != nullptr);
+                    pd->ddgi->Render(frame, newRs);
+                }
+
+                // unset parent pass after using it
+                raytracingPassData->parentPass = nullptr;
+            }
         }
     }
 
@@ -1982,50 +1989,99 @@ void DeferredRenderer::UpdateRaytracingView(FrameBase* frame, const RenderSetup&
     }
 
     const uint32 frameIndex = frame->GetFrameIndex();
-    
+
     RaytracingPassData* pd = ObjCast<RaytracingPassData>(rs.passData);
 
     RenderProxyList& rpl = RenderApi_GetConsumerProxyList(rs.view);
     rpl.BeginRead();
     HYP_DEFER({ rpl.EndRead(); });
-    
-    if (TLASRef& tlas = pd->raytracingTlases[frameIndex])
+
+    if (!pd->raytracingTlases[frameIndex])
     {
-        for (Entity* entity : rpl.GetMeshEntities())
+        for (TLASRef& tlas : pd->raytracingTlases)
         {
-            Assert(entity);
+            tlas = g_renderBackend->MakeTLAS();
+        }
+    }
 
-            RenderProxyMesh* meshProxy = rpl.GetMeshEntities().GetProxy(entity->Id());
-            Assert(meshProxy);
+    bool hasBlas = false;
 
-            BLASRef& blas = meshProxy->raytracingData.bottomLevelAccelerationStructures[frame->GetFrameIndex()];
+    for (Entity* entity : rpl.GetMeshEntities())
+    {
+        AssertDebug(entity != nullptr);
 
-            if (!blas)
+        RenderProxyMesh* meshProxy = rpl.GetMeshEntities().GetProxy(entity->Id());
+        Assert(meshProxy != nullptr);
+
+        AssertDebug(meshProxy->mesh != nullptr);
+
+        BLASRef& blas = meshProxy->raytracingData.bottomLevelAccelerationStructures[frame->GetFrameIndex()];
+
+        const bool materialsDiffer = blas != nullptr
+            && blas->GetMaterial() != meshProxy->material;
+
+        if (!blas || materialsDiffer)
+        {
+            if (blas != nullptr)
             {
-                blas = MeshBlasBuilder::Build(meshProxy->mesh, meshProxy->material);
-                Assert(blas != nullptr);
-
-                blas->SetTransform(meshProxy->bufferData.modelMatrix);
-
-                if (!blas->IsCreated())
+                for (TLASRef& tlas : pd->raytracingTlases)
                 {
-                    HYP_GFX_ASSERT(blas->Create());
+                    tlas->RemoveBLAS(blas);
                 }
-            }
-            else
-            {
-                blas->SetTransform(meshProxy->bufferData.modelMatrix);
+
+                SafeRelease(std::move(blas));
             }
 
-            if (!tlas->HasBLAS(blas))
+            blas = MeshBlasBuilder::Build(meshProxy->mesh, meshProxy->material);
+            Assert(blas != nullptr);
+
+            blas->SetTransform(meshProxy->bufferData.modelMatrix);
+
+            if (!blas->IsCreated())
+            {
+                HYP_GFX_ASSERT(blas->Create());
+            }
+        }
+        else
+        {
+            const uint32 materialBinding = RenderApi_RetrieveResourceBinding(meshProxy->material.Id());
+            const bool materialBindingsDiffer = blas->GetMaterialBinding() != materialBinding;
+
+            if (materialBindingsDiffer)
+            {
+                // needs to rebuild mesh descriptions if material binding changed
+                blas->SetMaterialBinding(materialBinding);
+            }
+
+            blas->SetTransform(meshProxy->bufferData.modelMatrix);
+        }
+
+        if (!pd->raytracingTlases[frameIndex]->HasBLAS(blas))
+        {
+            for (TLASRef& tlas : pd->raytracingTlases)
             {
                 tlas->AddBLAS(blas);
             }
+
+            hasBlas = true;
+        }
+    }
+
+    if (!pd->raytracingTlases[frameIndex]->IsCreated() )
+    {
+        if (hasBlas)
+        {
+            for (TLASRef& tlas : pd->raytracingTlases)
+            {
+                HYP_GFX_ASSERT(tlas->Create());
+            }
         }
 
-        RTUpdateStateFlags updateStateFlags = RTUpdateStateFlagBits::RT_UPDATE_STATE_FLAGS_NONE;
-        tlas->UpdateStructure(updateStateFlags);
+        return;
     }
+
+    RTUpdateStateFlags updateStateFlags = RTUpdateStateFlagBits::RT_UPDATE_STATE_FLAGS_NONE;
+    pd->raytracingTlases[frameIndex]->UpdateStructure(updateStateFlags);
 }
 
 void DeferredRenderer::PerformOcclusionCulling(FrameBase* frame, const RenderSetup& rs, RenderCollector& renderCollector)
