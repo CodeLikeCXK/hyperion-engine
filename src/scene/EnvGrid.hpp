@@ -19,8 +19,8 @@
 #include <rendering/RenderCollection.hpp>
 #include <rendering/RenderCommand.hpp>
 
-#include <GameCounter.hpp>
-#include <HashCode.hpp>
+#include <util/GameCounter.hpp>
+#include <core/HashCode.hpp>
 
 namespace hyperion {
 
@@ -32,8 +32,7 @@ class Texture;
 enum class EnvGridFlags : uint32
 {
     NONE = 0x0,
-    USE_VOXEL_GRID = 0x1,
-    DEBUG_DISPLAY_PROBES = 0x2
+    USE_VOXEL_GRID = 0x1
 };
 
 HYP_MAKE_ENUM_FLAGS(EnvGridFlags);
@@ -180,7 +179,7 @@ public:
     HYP_METHOD()
     void Translate(const BoundingBox& aabb, const Vec3f& translation);
 
-    virtual void UpdateRenderProxy(IRenderProxy* proxy) override;
+    virtual void UpdateRenderProxy(IRenderProxy* proxy) override final;
 
 private:
     virtual void OnAttachedToNode(Node* node) override;

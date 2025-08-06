@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include <core/Handle.hpp>
+#include <core/object/Handle.hpp>
 
 #include <core/containers/Bitset.hpp>
 
@@ -18,11 +18,10 @@
 
 #include <scene/Entity.hpp>
 
-#include <Types.hpp>
+#include <core/Types.hpp>
 
 namespace hyperion {
 
-class Engine;
 class Camera;
 class Material;
 class View;
@@ -283,6 +282,8 @@ public:
     void SetShadowMapFilter(ShadowMapFilter shadowMapFilter);
 
     BoundingSphere GetBoundingSphere() const;
+    
+    void UpdateRenderProxy(IRenderProxy* proxy) override final;
 
 protected:
     void Init() override;
@@ -290,8 +291,6 @@ protected:
 
     void OnAddedToScene(Scene* scene) override;
     void OnRemovedFromScene(Scene* scene) override;
-
-    void UpdateRenderProxy(IRenderProxy* proxy) override;
 
     void CreateShadowViews();
 

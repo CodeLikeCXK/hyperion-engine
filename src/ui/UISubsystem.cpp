@@ -34,8 +34,8 @@
 
 #include <system/AppContext.hpp>
 
-#include <Engine.hpp>
-#include <EngineGlobals.hpp>
+#include <engine/EngineDriver.hpp>
+#include <engine/EngineGlobals.hpp>
 
 namespace hyperion {
 
@@ -108,7 +108,7 @@ struct RENDER_COMMAND(SetFinalPassImageView)
             imageView = g_renderBackend->GetTextureImageView(g_renderGlobalState->placeholderData->defaultTexture2d);
         }
 
-        g_engine->GetFinalPass()->SetUILayerImageView(imageView);
+        g_engineDriver->GetFinalPass()->SetUILayerImageView(imageView);
 
         HYPERION_RETURN_OK;
     }
@@ -135,11 +135,11 @@ void UISubsystem::Init()
 {
     HYP_SCOPE;
 
-    m_onGbufferResolutionChangedHandle = g_engine->GetDelegates().OnAfterSwapchainRecreated.Bind([weakThis = WeakHandleFromThis()]()
+    m_onGbufferResolutionChangedHandle = g_engineDriver->GetDelegates().OnAfterSwapchainRecreated.Bind([weakThis = WeakHandleFromThis()]()
         {
             Threads::AssertOnThread(g_renderThread);
 
-            HYP_LOG(UI, Debug, "UISubsystem: resizing to {}", g_engine->GetAppContext()->GetMainWindow()->GetDimensions());
+            HYP_LOG(UI, Debug, "UISubsystem: resizing to {}", g_engineDriver->GetAppContext()->GetMainWindow()->GetDimensions());
 
             Handle<UISubsystem> subsystem = weakThis.Lock();
 
@@ -157,7 +157,7 @@ void UISubsystem::Init()
 
     Assert(m_uiStage != nullptr);
     InitObject(m_uiStage);
-    
+
     Assert(m_uiStage->GetCamera().IsValid());
     Assert(m_uiStage->GetCamera()->IsReady());
 
@@ -166,7 +166,7 @@ void UISubsystem::Init()
 
     ViewOutputTargetDesc outputTargetDesc {
         .extent = surfaceSize * 2,
-        .attachments = { { TF_RGBA8 }, { g_renderBackend->GetDefaultFormat(DIF_DEPTH) } }
+        .attachments = { { TF_RGBA16F }, { g_renderBackend->GetDefaultFormat(DIF_DEPTH) } }
     };
 
     ViewDesc viewDesc {

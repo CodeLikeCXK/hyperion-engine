@@ -17,8 +17,8 @@
 
 #include <core/object/HypClassUtils.hpp>
 
-#include <EngineGlobals.hpp>
-#include <Engine.hpp>
+#include <engine/EngineGlobals.hpp>
+#include <engine/EngineDriver.hpp>
 
 namespace hyperion {
 
@@ -82,7 +82,7 @@ EnvProbe::~EnvProbe()
 
 void EnvProbe::Init()
 {
-    AddDelegateHandler(g_engine->GetDelegates().OnShutdown.Bind([this]
+    AddDelegateHandler(g_engineDriver->GetDelegates().OnShutdown.Bind([this]
         {
             DetachChild(m_camera);
             m_camera.Reset();
@@ -359,7 +359,7 @@ void EnvProbe::UpdateRenderProxy(IRenderProxy* proxy)
     const FixedArray<Matrix4, 6> viewMatrices = CreateCubemapMatrices(m_aabb, GetOrigin());
 
     Memory::MemCpy(bufferData.faceViewMatrices, viewMatrices.Data(), sizeof(EnvProbeShaderData::faceViewMatrices));
-    // Memory::MemCpy(bufferData.sh.values, m_sphericalHarmonics.values, sizeof(EnvProbeSphericalHarmonics::values));
+    Memory::MemCpy(bufferData.sh.values, &m_shData, sizeof(EnvProbeSphericalHarmonics::values));
 
     bufferData.positionInGrid = m_positionInGrid;
 }

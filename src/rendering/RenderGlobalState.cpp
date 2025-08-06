@@ -55,7 +55,7 @@
 
 #include <util/BlueNoise.hpp>
 
-#include <EngineGlobals.hpp>
+#include <engine/EngineGlobals.hpp>
 
 #include <semaphore>
 
@@ -558,7 +558,7 @@ static ViewData* GetViewData(View* view)
     AssertDebug(view != nullptr);
 
 #ifdef HYP_DEBUG_MODE
-    Threads::AssertOnThread(g_renderThread);
+    Threads::AssertOnThread(g_renderThread | ThreadCategory::THREAD_CATEGORY_TASK);
 #endif
 
     auto viewDataIt = g_viewData.Find(view);
@@ -826,8 +826,9 @@ template <SizeType... Indices>
 static HYP_FORCE_INLINE void SyncResourcesT(ResourceTrackerBase** dstResourceTrackers, ResourceTrackerBase** srcResourceTrackers, std::index_sequence<Indices...>)
 {
     (SyncResources(
-        static_cast<typename TupleElement_Tuple<Indices, RenderProxyList::ResourceTrackerTypes>::Type*>(dstResourceTrackers[Indices]),
-        static_cast<typename TupleElement_Tuple<Indices, RenderProxyList::ResourceTrackerTypes>::Type*>(srcResourceTrackers[Indices])), ...);
+         static_cast<typename TupleElement_Tuple<Indices, RenderProxyList::ResourceTrackerTypes>::Type*>(dstResourceTrackers[Indices]),
+         static_cast<typename TupleElement_Tuple<Indices, RenderProxyList::ResourceTrackerTypes>::Type*>(srcResourceTrackers[Indices])),
+        ...);
 }
 
 static HYP_FORCE_INLINE void CopyDependencies(ViewData& vd, RenderProxyList& rpl)
@@ -859,7 +860,7 @@ RenderProxyList& RenderApi_GetConsumerProxyList(View* view)
     AssertDebug(view != nullptr);
 
 #ifdef HYP_DEBUG_MODE
-    Threads::AssertOnThread(g_renderThread);
+    Threads::AssertOnThread(g_renderThread | ThreadCategory::THREAD_CATEGORY_TASK);
 #endif
 
     return GetViewData(view)->rplRender;

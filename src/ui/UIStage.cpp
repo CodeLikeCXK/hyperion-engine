@@ -37,10 +37,12 @@
 
 #include <core/profiling/ProfileScope.hpp>
 
-#include <EngineGlobals.hpp>
-#include <Engine.hpp>
+#include <engine/EngineGlobals.hpp>
+#include <engine/EngineDriver.hpp>
 
 namespace hyperion {
+
+static constexpr float g_minHoldTimeToDrag = 0.01f;
 
 HYP_DECLARE_LOG_CHANNEL(UI);
 
@@ -159,7 +161,7 @@ void UIStage::SetScene(const Handle<Scene>& scene)
     cameraNode->SetName(NAME_FMT("{}_Camera", GetName()));
     cameraNode->SetEntity(m_camera);
 
-    g_engine->GetWorld()->AddScene(newScene);
+    g_engineDriver->GetWorld()->AddScene(newScene);
 
     InitObject(newScene);
 
@@ -205,7 +207,7 @@ void UIStage::Init()
     HYP_SCOPE;
     AssertOnOwnerThread();
 
-    if (const Handle<AppContextBase>& appContext = g_engine->GetAppContext())
+    if (const Handle<AppContextBase>& appContext = g_engineDriver->GetAppContext())
     {
         const auto updateSurfaceSize = [this](ApplicationWindow* window)
         {
@@ -486,7 +488,7 @@ UIEventHandlerResult UIStage::OnInputEvent(
 
             for (const Pair<WeakHandle<UIObject>, UIObjectPressedState>& it : m_mouseButtonPressedStates)
             {
-                if (it.second.heldTime >= 0.05f)
+                if (it.second.heldTime >= g_minHoldTimeToDrag)
                 {
                     // signal mouse drag
                     if (Handle<UIObject> uiObject = it.first.Lock())
@@ -733,24 +735,31 @@ UIEventHandlerResult UIStage::OnInputEvent(
         Array<Handle<UIObject>> rayTestResults;
         TestRay(mouseScreen, rayTestResults);
 
-        for (auto it = rayTestResults.Begin(); it != rayTestResults.End(); ++it)
+        const EnumFlags<MouseButtonState> buttons = event.GetMouseButtons();
+        HashMap<WeakHandle<UIObject>, UIObjectPressedState> modifiedStates;
+
+        if (buttons & MouseButtonState::LEFT)
         {
-            const Handle<UIObject>& uiObject = *it;
-
-            bool isClicked = false;
-
-            if (m_mouseButtonPressedStates.Contains(uiObject))
+            for (auto it = rayTestResults.Begin(); it != rayTestResults.End(); ++it)
             {
-                isClicked = true;
-            }
-        }
+                const Handle<UIObject>& uiObject = *it;
 
-        for (auto it = rayTestResults.Begin(); it != rayTestResults.End(); ++it)
-        {
-            const Handle<UIObject>& uiObject = *it;
+                auto stateIt = m_mouseButtonPressedStates.Find(uiObject);
 
-            if (m_mouseButtonPressedStates.Contains(uiObject))
-            {
+                if (stateIt == m_mouseButtonPressedStates.End() || !(stateIt->second.mouseButtons & buttons))
+                {
+                    continue;
+                }
+
+                const EnumFlags<MouseButtonState> currentState = stateIt->second.mouseButtons;
+                modifiedStates.Insert(*stateIt);
+                stateIt->second.mouseButtons &= ~buttons;
+
+                if (!(currentState & MouseButtonState::LEFT))
+                {
+                    continue;
+                }
+
                 if (!uiObject->IsEnabled())
                 {
                     continue;
@@ -779,7 +788,7 @@ UIEventHandlerResult UIStage::OnInputEvent(
             }
         }
 
-        for (auto& it : m_mouseButtonPressedStates)
+        for (auto& it : modifiedStates)
         {
             // trigger mouse up
             if (Handle<UIObject> uiObject = it.first.Lock())
@@ -796,8 +805,6 @@ UIEventHandlerResult UIStage::OnInputEvent(
                 eventHandlerResult |= currentResult;
             }
         }
-
-        m_mouseButtonPressedStates.Clear();
 
         break;
     }

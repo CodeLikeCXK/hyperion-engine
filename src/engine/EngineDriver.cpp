@@ -1,6 +1,6 @@
 /* Copyright (c) 2024 No Tomorrow Games. All rights reserved. */
 
-#include <Engine.hpp>
+#include <engine/EngineDriver.hpp>
 
 #include <rendering/PostFX.hpp>
 #include <rendering/RenderEnvironment.hpp>
@@ -55,12 +55,16 @@
 
 #include <scripting/ScriptingService.hpp>
 
-#include <EngineGlobals.hpp>
+#include <engine/EngineGlobals.hpp>
 #include <HyperionEngine.hpp>
 
 #define HYP_LOG_FRAMES_PER_SECOND
 
 namespace hyperion {
+
+class RenderThread;
+
+static RenderThread* g_renderThreadInstance = nullptr;
 
 static struct GlobalDescriptorSetsDeclarations
 {
@@ -69,6 +73,8 @@ static struct GlobalDescriptorSetsDeclarations
 #include <rendering/inl/DescriptorSets.inl>
     }
 } g_globalDescriptorSetsDeclarations;
+
+void HandleSignal(int signum);
 
 class RenderThread final : public Thread<Scheduler>
 {
@@ -88,8 +94,13 @@ public:
         // Must be current thread
         Threads::AssertOnThread(g_renderThread);
 
+        g_renderThreadInstance = this;
+
         SetCurrentThreadObject(this);
         m_scheduler.SetOwnerThread(Id());
+
+        signal(SIGINT, HandleSignal);
+        signal(SIGSEGV, HandleSignal);
 
         (*this)();
 
@@ -98,6 +109,8 @@ public:
 
     void Stop()
     {
+        g_renderThreadInstance = nullptr;
+
         m_isRunning.Set(false, MemoryOrder::RELEASE);
     }
 
@@ -135,7 +148,7 @@ private:
                 }
             }
 
-            g_engine->RenderNextFrame();
+            g_engineDriver->RenderNextFrame();
 
             RenderApi_EndFrame_RenderThread();
         }
@@ -145,14 +158,27 @@ private:
     AtomicVar<bool> m_isRunning;
 };
 
+void HandleSignal(int signum)
+{
+    if (!g_renderThreadInstance)
+    {
+        return;
+    }
+
+    g_renderThreadInstance->Stop();
+    g_renderThreadInstance->Join();
+
+    exit(signum);
+}
+
 #pragma region Render commands
 
 struct RENDER_COMMAND(RecreateSwapchain)
     : RenderCommand
 {
-    WeakHandle<Engine> engineWeak;
+    WeakHandle<EngineDriver> engineWeak;
 
-    RENDER_COMMAND(RecreateSwapchain)(const Handle<Engine>& engine)
+    RENDER_COMMAND(RecreateSwapchain)(const Handle<EngineDriver>& engine)
         : engineWeak(engine)
     {
     }
@@ -161,11 +187,11 @@ struct RENDER_COMMAND(RecreateSwapchain)
 
     virtual RendererResult operator()() override
     {
-        Handle<Engine> engine = engineWeak.Lock();
+        Handle<EngineDriver> engine = engineWeak.Lock();
 
         if (!engine)
         {
-            HYP_LOG(Rendering, Warning, "Engine was destroyed before swapchain could be recreated");
+            HYP_LOG(Rendering, Warning, "EngineDriver was destroyed before swapchain could be recreated");
             HYPERION_RETURN_OK;
         }
 
@@ -177,24 +203,24 @@ struct RENDER_COMMAND(RecreateSwapchain)
 
 #pragma endregion Render commands
 
-#pragma region Engine
+#pragma region EngineDriver
 
-const Handle<Engine>& Engine::GetInstance()
+const Handle<EngineDriver>& EngineDriver::GetInstance()
 {
-    return g_engine;
+    return g_engineDriver;
 }
 
-Engine::Engine()
+EngineDriver::EngineDriver()
     : m_isShuttingDown(false),
       m_shouldRecreateSwapchain(false)
 {
 }
 
-Engine::~Engine()
+EngineDriver::~EngineDriver()
 {
 }
 
-HYP_API void Engine::Init()
+HYP_API void EngineDriver::Init()
 {
     HYP_SCOPE;
     Threads::AssertOnThread(g_mainThread);
@@ -229,9 +255,6 @@ HYP_API void Engine::Init()
 
     // Update app configuration to reflect device, after instance is created (e.g RT is not supported)
     m_appContext->UpdateConfigurationOverrides();
-
-    m_configuration.SetToDefaultConfiguration();
-    m_configuration.LoadFromDefinitionsFile();
 
 #ifdef HYP_EDITOR
     // Create script compilation service
@@ -268,13 +291,13 @@ HYP_API void Engine::Init()
     SetReady(true);
 }
 
-bool Engine::IsRenderLoopActive() const
+bool EngineDriver::IsRenderLoopActive() const
 {
     return m_renderThread != nullptr
         && m_renderThread->IsRunning();
 }
 
-bool Engine::StartRenderLoop()
+bool EngineDriver::StartRenderLoop()
 {
     HYP_SCOPE;
     Threads::AssertOnThread(g_mainThread);
@@ -298,7 +321,7 @@ bool Engine::StartRenderLoop()
     return true;
 }
 
-void Engine::RequestStop()
+void EngineDriver::RequestStop()
 {
     if (m_renderThread != nullptr)
     {
@@ -309,7 +332,7 @@ void Engine::RequestStop()
     }
 }
 
-void Engine::FinalizeStop()
+void EngineDriver::FinalizeStop()
 {
     HYP_SCOPE;
     Threads::AssertOnThread(g_mainThread);
@@ -356,7 +379,7 @@ void Engine::FinalizeStop()
     m_renderThread.Reset();
 }
 
-HYP_API void Engine::RenderNextFrame()
+HYP_API void EngineDriver::RenderNextFrame()
 {
     HYP_PROFILE_BEGIN;
 
@@ -379,7 +402,7 @@ HYP_API void Engine::RenderNextFrame()
     g_renderBackend->PresentFrame(frame);
 }
 
-void Engine::PreFrameUpdate(FrameBase* frame)
+void EngineDriver::PreFrameUpdate(FrameBase* frame)
 {
     HYP_SCOPE;
 
@@ -390,6 +413,6 @@ void Engine::PreFrameUpdate(FrameBase* frame)
     g_safeDeleter->PerformEnqueuedDeletions();
 }
 
-#pragma endregion Engine
+#pragma endregion EngineDriver
 
 } // namespace hyperion
