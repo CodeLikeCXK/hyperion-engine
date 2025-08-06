@@ -8,14 +8,14 @@
 
 #include <core/utilities/Uuid.hpp>
 
-#include <core/Handle.hpp>
+#include <core/object/Handle.hpp>
 
 #include <scene/Entity.hpp>
 
 #include <util/AtlasPacker.hpp>
 
-#include <GameCounter.hpp>
-#include <Types.hpp>
+#include <util/GameCounter.hpp>
+#include <core/Types.hpp>
 
 namespace hyperion {
 
@@ -144,10 +144,11 @@ public:
     const LightmapElement* GetElement(uint32 index) const;
 
     bool BuildElementTextures(const LightmapUVMap& uvMap, uint32 index);
+    
+    void UpdateRenderProxy(IRenderProxy* proxy) override final;
 
 private:
     void Init() override;
-    void UpdateRenderProxy(IRenderProxy* proxy) override;
 
     void UpdateAtlasTextures();
 

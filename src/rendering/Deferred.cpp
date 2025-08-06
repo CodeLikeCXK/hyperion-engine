@@ -55,8 +55,8 @@
 
 #include <util/MeshBuilder.hpp>
 
-#include <EngineGlobals.hpp>
-#include <Engine.hpp>
+#include <engine/EngineGlobals.hpp>
+#include <engine/EngineDriver.hpp>
 
 namespace hyperion {
 
@@ -751,7 +751,7 @@ bool ReflectionsPass::ShouldRenderSSR() const
 {
     static const ConfigurationValue& ssrEnabled = GetGlobalConfig().Get("rendering.ssr.enabled");
     static const ConfigurationValue& raytracingReflectionsEnabled = GetGlobalConfig().Get("rendering.raytracing.reflections.enabled");
-    
+
     return ssrEnabled.ToBool(true) && !raytracingReflectionsEnabled.ToBool(false);
 }
 
@@ -1937,7 +1937,7 @@ void DeferredRenderer::RenderFrameForView(FrameBase* frame, const RenderSetup& r
         ExecuteDrawCalls(frame, rs, renderCollector, (1u << RB_SKYBOX));
 
         // render debug draw
-        g_engine->GetDebugDrawer()->Render(frame, rs);
+        g_engineDriver->GetDebugDrawer()->Render(frame, rs);
 
         frame->renderQueue << EndFramebuffer(translucentFbo);
     }
@@ -2067,7 +2067,7 @@ void DeferredRenderer::UpdateRaytracingView(FrameBase* frame, const RenderSetup&
         }
     }
 
-    if (!pd->raytracingTlases[frameIndex]->IsCreated() )
+    if (!pd->raytracingTlases[frameIndex]->IsCreated())
     {
         if (hasBlas)
         {

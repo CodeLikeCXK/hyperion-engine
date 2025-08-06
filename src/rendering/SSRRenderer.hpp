@@ -15,7 +15,6 @@
 
 namespace hyperion {
 
-class Engine;
 class GBuffer;
 
 HYP_STRUCT(ConfigName = "app", JsonPath = "rendering.ssr")
@@ -59,7 +58,7 @@ struct SSRRendererConfig : public ConfigBase<SSRRendererConfig>
 
     void PostLoadCallback()
     {
-        extent = Vec2u { 1024, 1024 };
+        extent = Vec2u { 1280, 720 };
 
         switch (quality)
         {

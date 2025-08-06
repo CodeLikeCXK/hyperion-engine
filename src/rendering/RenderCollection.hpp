@@ -28,7 +28,7 @@
 
 #include <rendering/RenderProxyable.hpp>
 
-#include <Types.hpp>
+#include <core/Types.hpp>
 
 namespace hyperion {
 
@@ -294,7 +294,7 @@ public:
 
                     if (shouldUpdateRenderProxy)
                     {
-                        static_cast<RenderProxyable*>(resource)->UpdateRenderProxy(pProxy);
+                        resource->UpdateRenderProxy(pProxy);
                     }
                 }
             }

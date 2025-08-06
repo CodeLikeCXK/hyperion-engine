@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include <core/Handle.hpp>
+#include <core/object/Handle.hpp>
 
 #include <core/containers/Queue.hpp>
 
@@ -25,14 +25,13 @@
 
 #include <scene/Entity.hpp>
 
-#include <GameCounter.hpp>
+#include <util/GameCounter.hpp>
 
 #include <atomic>
 #include <mutex>
 
 namespace hyperion {
 
-class Engine;
 class CameraStreamingVolume;
 
 HYP_ENUM()
@@ -597,6 +596,8 @@ public:
 
     void Update(float delta) override;
     void UpdateMatrices();
+    
+    virtual void UpdateRenderProxy(IRenderProxy* proxy) override final;
 
 protected:
     void Init() override;
@@ -631,8 +632,6 @@ private:
 
     virtual void OnAddedToWorld(World* world) override;
     virtual void OnRemovedFromWorld(World* world) override;
-
-    virtual void UpdateRenderProxy(IRenderProxy* proxy) override;
 
     Matrix4 m_viewProjMat;
     Matrix4 m_previousViewMatrix;

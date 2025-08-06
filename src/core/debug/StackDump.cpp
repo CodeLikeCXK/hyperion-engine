@@ -45,7 +45,12 @@ static Array<String> CreatePlatformStackTrace(uint32 depth, uint32 offset)
     stackFrame.AddrFrame.Offset = context.Fp;
     stackFrame.AddrStack.Offset = context.Sp;
 
+#ifdef HYP_ARM
+    DWORD machineType = IMAGE_FILE_MACHINE_ARM64;
+#else
     DWORD machineType = IMAGE_FILE_MACHINE_AMD64;
+#endif
+    
     uint32 index = 0;
 
     while (index < depth && StackWalk64(machineType, process, GetCurrentThread(), &stackFrame, &context, NULL, SymFunctionTableAccess64, SymGetModuleBase64, NULL))
