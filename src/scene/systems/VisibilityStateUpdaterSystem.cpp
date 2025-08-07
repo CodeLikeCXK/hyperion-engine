@@ -13,18 +13,23 @@
 
 namespace hyperion {
 
+bool VisibilityStateUpdaterSystem::ShouldCreateForScene(Scene* scene) const
+{
+    return !(scene->GetFlags() & (SceneFlags::UI | SceneFlags::DETACHED));
+}
+
 void VisibilityStateUpdaterSystem::OnEntityAdded(Entity* entity)
 {
     SystemBase::OnEntityAdded(entity);
 
     VisibilityStateComponent& visibilityStateComponent = GetEntityManager().GetComponent<VisibilityStateComponent>(entity);
 
-    GetEntityManager().AddTag<EntityTag::UPDATE_VISIBILITY_STATE>(entity);
-
     if (visibilityStateComponent.octantId != OctantId::Invalid())
     {
         return;
     }
+    
+    GetEntityManager().AddTag<EntityTag::UPDATE_VISIBILITY_STATE>(entity);
 
     visibilityStateComponent.visibilityState = nullptr;
 
@@ -51,7 +56,7 @@ void VisibilityStateUpdaterSystem::OnEntityAdded(Entity* entity)
 
         // HYP_LOG(Octree, Debug, "Inserted entity #{} into octree, inserted at {}, {}", entity.Id().Value(), visibilityStateComponent.octantId.GetIndex(), visibilityStateComponent.octantId.GetDepth());
 
-        // GetEntityManager().RemoveTag<EntityTag::UPDATE_VISIBILITY_STATE>(entity);
+         GetEntityManager().RemoveTag<EntityTag::UPDATE_VISIBILITY_STATE>(entity);
     }
     else
     {
@@ -104,7 +109,7 @@ void VisibilityStateUpdaterSystem::Process(float delta)
 
             if (insertResult.HasValue())
             {
-                Assert(insertResult.GetValue() != OctantId::Invalid(), "Invalid octant Id returned from Insert()");
+                AssertDebug(insertResult.GetValue() != OctantId::Invalid(), "Invalid OctantId returned from Insert()");
 
                 visibilityStateComponent.octantId = insertResult.GetValue();
 
@@ -112,6 +117,8 @@ void VisibilityStateUpdaterSystem::Process(float delta)
                 {
                     visibilityStateComponent.visibilityState = &octant->GetVisibilityState();
                 }
+                
+                updatedEntities.Insert(entity->WeakHandleFromThis());
             }
 
             return;
@@ -134,18 +141,20 @@ void VisibilityStateUpdaterSystem::Process(float delta)
             return;
         }
 
-        AssertDebug(updateResult.GetValue() != OctantId::Invalid(), "Invalid octant Id returned from Update()");
-
         visibilityStateComponent.octantId = updateResult.GetValue();
-
-        if (visibilityStateComponent.octantId != OctantId::Invalid())
+        
+        if (visibilityStateComponent.octantId.IsInvalid())
         {
-            visibilityStateComponent.visibilityState = nullptr;
+            AssertDebug(false, "Invalid OctantId returned from Update()");
+            
+            return;
+        }
+        
+        visibilityStateComponent.visibilityState = nullptr;
 
-            if (SceneOctree* octant = octree.GetChildOctant(visibilityStateComponent.octantId))
-            {
-                visibilityStateComponent.visibilityState = &octant->GetVisibilityState();
-            }
+        if (SceneOctree* octant = octree.GetChildOctant(visibilityStateComponent.octantId))
+        {
+            visibilityStateComponent.visibilityState = &octant->GetVisibilityState();
         }
 
         updatedEntities.Insert(entity->WeakHandleFromThis());
@@ -158,6 +167,16 @@ void VisibilityStateUpdaterSystem::Process(float delta)
 
     if (updatedEntities.Any())
     {
+#ifdef HYP_DEBUG_MODE
+        if (updatedEntities.Size() >= 128)
+        {
+            HYP_LOG(Scene, Warning, "Updating visibility states for a lot of entities ({})! This will have a performance impact if it happens frequently."
+                "\n\tMaybe the Scene's octree should have a different bounding size or be broken into multiple Scenes."
+                "\n\tScene name: {}, flags: {}",
+                updatedEntities.Size(), GetScene()->GetName(), uint32(GetScene()->GetFlags()));
+        }
+#endif
+        
         AfterProcess([this, updatedEntities = std::move(updatedEntities)]()
             {
                 for (const WeakHandle<Entity>& entityWeak : updatedEntities)

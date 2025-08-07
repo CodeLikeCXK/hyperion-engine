@@ -6,7 +6,7 @@
       "quality": 2,
       "eyeFade": [0.980000, 0.990000],
       "rayStep": 1.500000,
-      "enabled": true,
+      "enabled": false,
       "screenEdgeFade": [0.960000, 0.990000],
       "roughnessScattering": true
     },
@@ -15,7 +15,7 @@
         "enabled": false
       },
       "globalIllumination": {
-        "enabled": true
+        "enabled": false
       }
     },
     "taa": {
@@ -24,8 +24,8 @@
     "debug": {
       "reflections": false,
       "debugDrawer": {
-        "enabled": true,
-        "envGridProbes": true
+        "enabled": false,
+        "envGridProbes": false
       },
       "irradiance": false
     },
@@ -53,6 +53,12 @@
     "ssgi": {
       "quality": 0,
       "enabled": false
+    }
+  },
+  "editor": {
+    "camera": {
+      "moveSensitivity": 1,
+      "lookSensitivity": 1
     }
   },
   "app": {

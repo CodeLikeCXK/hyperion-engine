@@ -7,6 +7,8 @@
 #include <system/AppContext.hpp>
 #include <system/SystemEvent.hpp>
 
+#include <core/utilities/DeferredScope.hpp>
+
 #include <core/threading/Threads.hpp>
 #include <core/threading/Spinlock.hpp>
 
@@ -28,12 +30,11 @@ void InputEventSink::Push(SystemEvent&& evt)
 {
     Spinlock spinlock(m_lockState);
     spinlock.LockWriter();
+    HYP_DEFER({ spinlock.UnlockWriter(); });
 
     m_events.PushBack(std::move(evt));
 
     m_notifier.Produce(1);
-
-    spinlock.UnlockWriter();
 }
 
 bool InputEventSink::Poll(Array<SystemEvent>& outEvents)
@@ -45,18 +46,16 @@ bool InputEventSink::Poll(Array<SystemEvent>& outEvents)
 
     Spinlock spinlock(m_lockState);
     spinlock.LockReader();
+    HYP_DEFER({ spinlock.UnlockReader(); });
 
     if (m_events.Empty())
     {
-        spinlock.UnlockReader();
         return false;
     }
 
     outEvents = std::move(m_events);
 
     m_notifier.Release(outEvents.Size());
-
-    spinlock.UnlockReader();
 
     return true;
 }
@@ -278,7 +277,7 @@ void InputManager::SetKey(KeyCode key, bool pressed)
 {
     if (uint32(key) < NUM_KEYBOARD_KEYS)
     {
-        m_inputState.keyStates[uint32(key)] = pressed;
+        m_inputState.keyStates.Set(uint32(key), pressed);
     }
 }
 
@@ -286,7 +285,14 @@ void InputManager::SetMouseButton(MouseButton btn, bool pressed)
 {
     if (uint32(btn) < NUM_MOUSE_BUTTONS)
     {
-        m_inputState.mouseButtonStates[uint32(btn)] = pressed;
+        if (pressed)
+        {
+            m_inputState.mouseButtonStates |= MouseButtonState(1u << uint32(btn));
+        }
+        else
+        {
+            m_inputState.mouseButtonStates &= MouseButtonState(~(1u << uint32(btn)));
+        }
     }
 }
 
@@ -294,7 +300,7 @@ bool InputManager::IsKeyDown(KeyCode key) const
 {
     if (uint32(key) < NUM_KEYBOARD_KEYS)
     {
-        return m_inputState.keyStates[uint32(key)];
+        return m_inputState.keyStates.Test(uint32(key));
     }
 
     return false;
@@ -304,7 +310,7 @@ bool InputManager::IsButtonDown(MouseButton btn) const
 {
     if (uint32(btn) < NUM_MOUSE_BUTTONS)
     {
-        return m_inputState.mouseButtonStates[uint32(btn)];
+        return m_inputState.mouseButtonStates & MouseButtonState(1u << uint32(btn));
     }
 
     return false;
@@ -316,7 +322,7 @@ EnumFlags<MouseButtonState> InputManager::GetButtonStates() const
 
     for (uint32 i = 0; i < NUM_MOUSE_BUTTONS; i++)
     {
-        if (m_inputState.mouseButtonStates[i])
+        if (m_inputState.mouseButtonStates & MouseButtonState(1u << i))
         {
             state |= MouseButtonState(1u << i);
         }
