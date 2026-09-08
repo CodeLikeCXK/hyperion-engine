@@ -6,10 +6,16 @@ mkdir .\Build\CodeGen
 pushd .\Build\CodeGen
 
 choice /C YN /T 3 /D N /M "Regenerate CMake? (will continue without regenerating in 3s)"
-if %errorlevel%==1 (
-    cmake ..\..\Tools\CodeGen
-)
+if errorlevel 2 goto skip_cmake_gen
 
+rem On ARM64 devices (Windows on ARM), the Visual Studio generator defaults
+rem to the x64 platform which would build the codegen tool for emulated x64.
+rem Force the native ARM64 platform when running natively on an ARM64 host.
+set "CMAKE_PLATFORM_ARGS="
+if /I "%PROCESSOR_ARCHITECTURE%"=="ARM64" set "CMAKE_PLATFORM_ARGS=-A ARM64"
+cmake ..\..\Tools\CodeGen %CMAKE_PLATFORM_ARGS%
+
+:skip_cmake_gen
 cmake --build . --target hyperion-codegen --parallel 4
 if errorlevel 1 (
     exit /b 1

@@ -105,9 +105,9 @@ endif()
 
 if(HYP_PLATFORM_NAME STREQUAL "Windows")
   add_custom_command(TARGET ${BUILD_NAME} POST_BUILD
-      COMMAND ${CMAKE_COMMAND} -E copy_if_newer
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_CURRENT_SOURCE_DIR}/steam_appid.txt"
-        "$<TARGET_FILE_DIR:${BUILD_NAME}>")
+        "$<TARGET_FILE_DIR:${BUILD_NAME}>/steam_appid.txt")
 endif()
 
 # link with shared library hyperion
