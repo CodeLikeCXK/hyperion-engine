@@ -78,7 +78,9 @@ Light::Light(LightType type, const Vec3f& position, const Color& color, float in
       m_numShadowMapCascades(1),
       forceRedrawShadows(false)
 {
-    m_nodeFlags |= NodeFlags::ExcludeFromParentBounds | NodeFlags::ExcludeFromOctree;
+    m_nodeFlags |= NodeFlags::ExcludeFromParentBounds
+                | NodeFlags::ExcludeFromOctree
+                | NodeFlags::MobilityStatic;
 
     m_entityInitInfo.canEverUpdate = true;
     m_entityInitInfo.receivesUpdate = false;
@@ -102,7 +104,9 @@ Light::Light(LightType type, const Vec3f& position, const Vec3f& normal, const V
       m_numShadowMapCascades(1),
       forceRedrawShadows(false)
 {
-    m_nodeFlags |= NodeFlags::ExcludeFromParentBounds | NodeFlags::ExcludeFromOctree;
+    m_nodeFlags |= NodeFlags::ExcludeFromParentBounds
+                | NodeFlags::ExcludeFromOctree
+                | NodeFlags::MobilityStatic;
 
     m_entityInitInfo.canEverUpdate = true;
     m_entityInitInfo.receivesUpdate = false;
@@ -169,6 +173,9 @@ void Light::OnTransformUpdated()
     Entity::OnTransformUpdated();
 
     forceRedrawShadows = true;
+
+    SetNeedsRenderProxyUpdate();
+    MarkDirty();
 }
 
 void Light::Update(float delta)
@@ -567,11 +574,19 @@ void Light::BakeStaticShadows()
         return;
     }
 
-    Array<Handle<Layer>> layers = SceneHelpers::GetTargetLayers(*this);
+    // Bake only the active layer
+    const Handle<Layer>& layer = world->GetActiveLayer();
 
-    if (layers.Empty())
+    if (!layer.IsValid())
     {
-        HYP_LOG(Editor, Error, "Cannot bake Light {}: could not resolve a target layer for it", GetName());
+        HYP_LOG(Editor, Error, "Cannot bake Light {}: could not resolve the active layer", GetName());
+
+        return;
+    }
+
+    if (!HasNoLayers() && !IsInLayer(layer->layerId))
+    {
+        HYP_LOG(Editor, Error, "Cannot bake Light {}: it is not in the active layer '{}'", GetName(), layer->name);
 
         return;
     }
@@ -583,10 +598,7 @@ void Light::BakeStaticShadows()
         bakerSubsystem = world->AddSubsystem<BakerSubsystem>();
     }
 
-    for (const Handle<Layer>& layer : layers)
-    {
-        bakerSubsystem->EnqueueBake(layer->bakeLayer, MakeStrongRef(this));
-    }
+    bakerSubsystem->EnqueueBake(layer->bakeLayer, MakeStrongRef(this));
 }
 
 #endif

@@ -9,6 +9,7 @@
 #include <Core/Constants.hpp>
 
 #include <Core/Reflection/Handle.hpp>
+#include <Core/Reflection/BoxedValue.hpp>
 
 #include <Core/Containers/Array.hpp>
 #include <Core/Containers/Set.hpp>
@@ -18,9 +19,11 @@
 #include <Core/Math/Mat4f.hpp>
 
 #include <Core/Utilities/BitField.hpp>
+#include <Core/Utilities/Pair.hpp>
 
 #include <Scene/Node.hpp>
 #include <Scene/EntityTag.hpp>
+#include <Scene/Components/LayerOverridesComponent.hpp>
 
 namespace Hyperion {
 
@@ -39,6 +42,9 @@ struct EntityInitInfo
     // Initial tags to add to the Entity when it is created
     FatArray<EntityTag, InlineAllocator<4, SceneAllocator>> initialTags;
     FatArray<Name, InlineAllocator<4, SceneAllocator>> layerNames;
+
+    // @TODO: Can we remove? Just use component..?
+    Array<EntityLayerOverrideSet, SceneAllocator> pendingLayerOverrides;
     
     bool receivesUpdate = false;
     bool canEverUpdate = true;
@@ -126,6 +132,11 @@ public:
 
     HYP_METHOD()
     void RemoveFromLayerByName(Name layerName);
+
+    //-- Layer overrides --
+
+    void SetPendingLayerOverrides(Array<EntityLayerOverrideSet>&& sets);
+    void FlushPendingLayerOverrides();
 
     //-- Tick --
 

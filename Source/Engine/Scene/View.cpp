@@ -77,8 +77,9 @@ static CVar<float>* s_csmClipDistances[] = {
 CVar<bool> g_cvCSMTimeSlicingEnabled("Rendering.Shadows.CSMTimeSlicingEnabled", true);
 CVar<int> g_cvCSMMaxUpdatesPerFrame("Rendering.Shadows.CSMMaxUpdatesPerFrame", 1);
 CVar<int> g_cvCSMMaxStaleFrames("Rendering.Shadows.CSMMaxStaleFrames", 8);
-static CVar<float> s_cvCSMBasisAngleThresholdDegrees("Rendering.Shadows.CSMBasisAngleThresholdDegrees", 0.05f);
-static CVar<float> s_cvCSMBasisPositionThreshold("Rendering.Shadows.CSMBasisPositionThreshold", 1.0f);
+CVar<int> g_cvCSMPriorityCascades("Rendering.Shadows.CSMPriorityCascades", 1);
+CVar<float> g_cvCSMBasisAngleThresholdDegrees("Rendering.Shadows.CSMBasisAngleThresholdDegrees", 0.05f);
+CVar<float> g_cvCSMBasisPositionThreshold("Rendering.Shadows.CSMBasisPositionThreshold", 1.0f);
 
 // Always mark dirty at this value
 static const int s_dirtyResourceVersion = -1;
@@ -544,23 +545,29 @@ void View::PrepareShadowViews(Array<View*, SceneTempAllocator>& outShadowViews)
         // Shared CSM view matrix, anchored to the scene bounds so it is stable as the camera moves.
         if (isDirectional && isWorldBoundsSphereValid)
         {
-            shadowViewMatrix = ShadowCameraHelpers::CalculateShadowViewMatrix(worldBoundsSphere, lightDir);
-
             DirectionalLight::CSMState& csmState = StaticCast<DirectionalLight>(light)->csmState;
 
             bool basisChanged = !csmState.basisInitialized;
-            !basisChanged && (basisChanged |= (csmState.lastCommittedLightDir.Dot(lightDir) < MathUtil::Cos(MathUtil::DegToRad(s_cvCSMBasisAngleThresholdDegrees.Get()))));
-            !basisChanged && (basisChanged |= ((worldBoundsSphere.GetCenter() - csmState.lastCommittedWorldBounds.GetCenter()).Length() > s_cvCSMBasisPositionThreshold.Get()));
-            !basisChanged && (basisChanged |= (MathUtil::Abs(worldBoundsSphere.GetRadius() - csmState.lastCommittedWorldBounds.GetRadius()) > s_cvCSMBasisPositionThreshold.Get()));
+            !basisChanged && (basisChanged |= (csmState.lastCommittedLightDir.Dot(lightDir) < MathUtil::Cos(MathUtil::DegToRad(g_cvCSMBasisAngleThresholdDegrees.Get()))));
+            !basisChanged && (basisChanged |= ((worldBoundsSphere.GetCenter() - csmState.lastCommittedWorldBounds.GetCenter()).Length() > g_cvCSMBasisPositionThreshold.Get()));
+            !basisChanged && (basisChanged |= (MathUtil::Abs(worldBoundsSphere.GetRadius() - csmState.lastCommittedWorldBounds.GetRadius()) > g_cvCSMBasisPositionThreshold.Get()));
 
             csmInvalidated |= basisChanged;
 
             if (csmInvalidated)
             {
+                csmState.committedViewMatrix = ShadowCameraHelpers::CalculateShadowViewMatrix(worldBoundsSphere, lightDir);
                 csmState.lastCommittedLightDir = lightDir;
                 csmState.lastCommittedWorldBounds = worldBoundsSphere;
                 csmState.basisInitialized = true;
             }
+
+            // All cascades sample with one shared view matrix, so it can only change when every
+            // cascade redraws together (csmInvalidated). Otherwise a cascade that redraws early
+            // publishes a basis the others' bounds were never fit in, and they go black.
+            shadowViewMatrix = csmState.committedViewMatrix;
+            // Fit against the same frozen bounds so the cascade Z range doesn't drift either.
+            worldBoundsSphere = csmState.lastCommittedWorldBounds;
         }
 
         uint32 csmUpdatesSpentThisFrame = 0;
@@ -654,6 +661,8 @@ void View::PrepareShadowViews(Array<View*, SceneTempAllocator>& outShadowViews)
                     ? shadowViewsDynamic[shadowViewIndex]
                     : shadowViewsStatic[shadowViewIndex];
 
+                //-- Cascade Budget
+
                 if (!g_cvCSMTimeSlicingEnabled.Get() || csmInvalidated || !currentCascadeView)
                 {
                     updateCascade = true;
@@ -662,13 +671,24 @@ void View::PrepareShadowViews(Array<View*, SceneTempAllocator>& outShadowViews)
                 {
                     const bool boundsChanged = shadowViewBounds != currentCascadeView->cachedBounds;
                     const uint32 framesSinceUpdate = GetFrameCounter() - csmState.lastCommittedFrame[shadowViewIndex];
-                    const bool isStale = framesSinceUpdate >= uint32(MathUtil::Max(g_cvCSMMaxStaleFrames.Get(), 1));
 
-                    updateCascade = isStale || (boundsChanged && csmUpdatesSpentThisFrame < uint32(MathUtil::Max(g_cvCSMMaxUpdatesPerFrame.Get(), 0)));
+                    // stagger updates for cascades so they don't all fall on the same frame
+                    const uint32 staleFrames = uint32(MathUtil::Max(g_cvCSMMaxStaleFrames.Get(), 1)) + shadowViewIndex;
+                    const bool isStale = framesSinceUpdate >= staleFrames;
 
-                    if (updateCascade && !isStale)
+                    const bool isPriorityCascade = (shadowViewIndex < uint32(MathUtil::Max(g_cvCSMPriorityCascades.Get(), 0)));
+                    const bool isAtOrAfterCursor = (shadowViewIndex >= csmState.nextUpdateCascade);
+
+                    const bool canSpendBudget = isAtOrAfterCursor
+                        && csmUpdatesSpentThisFrame < uint32(MathUtil::Max(g_cvCSMMaxUpdatesPerFrame.Get(), 0));
+
+                    updateCascade = isStale || (boundsChanged && (isPriorityCascade || canSpendBudget));
+
+                    if (updateCascade && !isStale && !isPriorityCascade)
                     {
                         ++csmUpdatesSpentThisFrame;
+
+                        csmState.nextUpdateCascade = (shadowViewIndex + 1) % numCascades;
                     }
                 }
 
@@ -676,6 +696,8 @@ void View::PrepareShadowViews(Array<View*, SceneTempAllocator>& outShadowViews)
                 {
                     csmState.lastCommittedFrame[shadowViewIndex] = GetFrameCounter();
                 }
+
+                //--
             }
 
             if (!isDirectional)
@@ -721,16 +743,23 @@ void View::PrepareShadowViews(Array<View*, SceneTempAllocator>& outShadowViews)
 
                 const bool isStaticView = (shadowView == shadowViewsStatic[shadowViewIndex]);
 
+                // The matrix this view actually carries; still the old one while the cascade is deferred.
+                // Hashing the deferred candidate instead would latch skipNext on a matrix the view never
+                // adopts, freezing the static layer a matrix behind until the camera moves again.
+                const Mat4f& committedViewProjMatrix = updateCascade
+                    ? shadowViewProjMatrix
+                    : shadowView->cachedMatrices.viewProj;
+
                 if (isStaticView && !lightForceRedraw)
                 {
                     //--
                     // static views skip collection when their inputs (light version, viewProj, static geometry hashes) are unchanged.
                     // this must be evaluated even when the cascade is not being updated this frame.
-                    // 
+                    //
                     // otherwise static shadow maps would freeze while the camera is not moving, since their RPL diff would never refresh.
                     //--
                     HashCode inputHash = HashCode::GetHashCode(*light->GetRenderProxyVersionPtr())
-                        .Combine(shadowViewProjMatrix.GetHashCode());
+                        .Combine(committedViewProjMatrix.GetHashCode());
 
                     for (Scene* shadowViewScene : shadowViewScenes)
                     {
@@ -772,6 +801,13 @@ void View::PrepareShadowViews(Array<View*, SceneTempAllocator>& outShadowViews)
 
                 outShadowViews.PushBack(shadowView);
             }
+        }
+
+        // nothing at or after the cursor wanted the budget, so wrap it rather than leaving the
+        // cascades below it starved.
+        if (isDirectional && csmUpdatesSpentThisFrame == 0)
+        {
+            StaticCast<DirectionalLight>(light)->csmState.nextUpdateCascade = 0;
         }
 
         light->forceRedrawShadows = false;

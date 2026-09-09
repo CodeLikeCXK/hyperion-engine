@@ -10,6 +10,7 @@
 #include <Scene/Scene.hpp>
 #include <Scene/View.hpp>
 #include <Scene/EntityManager.hpp>
+#include <Scene/Entity.hpp>
 #include <Scene/EntityTag.hpp>
 #include <Scene/SystemExecutionGroup.hpp>
 #include <Scene/Subsystem.hpp>
@@ -26,6 +27,7 @@
 #include <Scene/Systems/MeshSystem.hpp>
 #include <Scene/Systems/ReplicationSystem.hpp>
 #include <Scene/Systems/ReplicationApplySystem.hpp>
+#include <Scene/Systems/LayerOverrideSystem.hpp>
 
 #include <Scene/Components/MeshComponent.hpp>
 #include <Scene/Components/TransformComponent.hpp>
@@ -43,6 +45,7 @@
 #include <Core/Threading/DataRaceDetector.hpp>
 
 #include <Core/Utilities/BitField.hpp>
+#include <Core/Functional/Proc.hpp>
 
 #include <Core/Config/Config.hpp>
 
@@ -87,7 +90,6 @@ static EngineStatTimer s_statPhysicsUpdate("Physics/Update");
 
 static const Name s_nameStreamingLayerScenes = NAME("Scenes_Layer");
 static const Name s_nameUnnamedWorld = NAME("<unnamed world>");
-static const Name s_defaultLayerName = NAME("Default");
 
 World::World()
     : World(s_nameUnnamedWorld)
@@ -256,6 +258,9 @@ void World::Initialize()
     if (!HasSystem<CameraSystem>())
         AddSystem(MakeHandle<CameraSystem>());
 
+    if (!HasSystem<LayerOverrideSystem>())
+        AddSystem(MakeHandle<LayerOverrideSystem>());
+
     if (!(m_worldFlags & WorldFlags::Editor))
     {
         if (!HasSystem<CharacterControllerSystem>())
@@ -283,7 +288,7 @@ void World::Initialize()
         if (!m_activeLayer)
         {
             // Set to default layer if no ActiveLayer
-            m_activeLayer = s_defaultLayerName;
+            m_activeLayer = g_defaultLayerName;
         }
 
         const Handle<Layer>& layer = GetOrCreateLayer(m_activeLayer);
@@ -647,7 +652,7 @@ Name World::GetActiveLayerName() const
 
     if (!m_activeLayer)
     {
-        return s_defaultLayerName;
+        return g_defaultLayerName;
     }
 
     return m_activeLayer;
@@ -659,13 +664,25 @@ void World::SetActiveLayer(Name layerName)
 
     if (layerName == Name::Invalid())
     {
-        layerName = s_defaultLayerName;
+        layerName = g_defaultLayerName;
     }
-    
+
     const Handle<Layer>& layer = GetOrCreateLayer(layerName);
 
     m_activeLayer = layerName;
     m_activeLayerId = layer->layerId;
+
+    if (LayerOverrideSystem* layerOverrideSystem = GetSystem<LayerOverrideSystem>())
+    {
+        layerOverrideSystem->ApplyActive();
+    }
+
+    // Overrides are applied, so the volumes now carry this layer's atlas textures - re-pick which volume
+    // lights each entity, since a volume with no bake for this layer can no longer be used.
+    if (LightmapSystem* lightmapSystem = GetSystem<LightmapSystem>())
+    {
+        lightmapSystem->ResolveVolumeAssignments();
+    }
 
     OnActiveLayerChanged(m_activeLayer);
 }
@@ -678,7 +695,7 @@ const Handle<Layer>& World::GetActiveLayer()
 
     if (!activeLayer)
     {
-        activeLayer = s_defaultLayerName;
+        activeLayer = g_defaultLayerName;
     }
 
     return GetOrCreateLayer(activeLayer);
@@ -688,7 +705,7 @@ const Handle<Layer>& World::GetDefaultLayer()
 {
     AssertOnThread(g_simThread);
 
-    return GetOrCreateLayer(s_defaultLayerName);
+    return GetOrCreateLayer(g_defaultLayerName);
 }
 
 const Handle<Layer>& World::TryGetLayer(Name layerName)

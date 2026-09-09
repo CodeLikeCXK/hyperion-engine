@@ -33,6 +33,7 @@
 #include <Scene/System.hpp>
 #include <Scene/Systems/ScriptSystem.hpp>
 #include <Scene/Systems/MeshSystem.hpp>
+#include <Scene/Systems/LayerOverrideSystem.hpp>
 
 #include <Scene/Sky/DynamicSkySystem.hpp>
 
@@ -179,6 +180,8 @@ void EditorGizmoBase::Init()
 
 void EditorGizmoBase::Shutdown()
 {
+    m_focusedNodeTransformHandler.Reset();
+
     if (m_node.IsValid())
     {
         // Remove from scene
@@ -190,6 +193,9 @@ void EditorGizmoBase::Shutdown()
 
 void EditorGizmoBase::SetFocusedNode(const Handle<Node>& focusedNode)
 {
+    // Stop tracking the previously focused node's transform
+    m_focusedNodeTransformHandler.Reset();
+
     if (!focusedNode.IsValid() || focusedNode->IsRoot() || focusedNode->IsA<SkyProbe>())
     {
         // don't want to move the root node or sky
@@ -206,6 +212,30 @@ void EditorGizmoBase::SetFocusedNode(const Handle<Node>& focusedNode)
     }
 
     m_node->SetWorldTranslation(focusedNode->GetWorldTranslation());
+
+    // Keep the gizmo in sync when the focused node's transform changes externally
+    // (e.g. layer overrides applied on active-layer switch, undo/redo from other paths).
+    const WeakHandle<Node> weakFocused = focusedNode;
+    const Handle<Node> gizmoNode = m_node;
+
+    m_focusedNodeTransformHandler = Node::TransformUpdated.Bind(
+        focusedNode.Get(),
+        [weakFocused, gizmoNode](Node* updatedNode) -> void
+        {
+            if (!gizmoNode.IsValid())
+            {
+                return;
+            }
+
+            const Handle<Node> focused = weakFocused.Lock();
+
+            if (!focused.IsValid() || focused.Get() != updatedNode)
+            {
+                return;
+            }
+
+            gizmoNode->SetWorldTranslation(focused->GetWorldTranslation());
+        });
 }
 
 void EditorGizmoBase::OnDragStart(const Handle<Camera>& camera, const MouseEvent& mouseEvent, const Handle<Node>& node, const Vec3f& hitpoint)
@@ -343,6 +373,175 @@ void TranslateEditorGizmo::OnDragStart(const Handle<Camera>& camera, const Mouse
     }
 }
 
+//-- Layer override transform edits (gizmos) --
+
+static LayerOverrideSystem* GetLayerOverrideSystemFor(const Entity* entity)
+{
+    if (!entity)
+    {
+        return nullptr;
+    }
+
+    World* world = entity->GetWorld();
+
+    if (!world)
+    {
+        return nullptr;
+    }
+
+    return world->GetSystem<LayerOverrideSystem>();
+}
+
+struct LayerOverrideTransformEditState
+{
+    Handle<Entity> entity;
+    Name layer;
+    bool routeToOverride = false; // override mode: edits land in the active layer's set
+    bool wasOverridden = false;   // LocalTransform was overridden in the active layer's set
+    Transform preTransform;
+    Transform postTransform;
+};
+
+/*! Captures layer-override state for entities affected by a gizmo transform edit.
+ *  In override mode, the post-drag local transform is written into the active layer's override
+ *  set (created and applied if needed). Otherwise, an existing override of LocalTransform in the
+ *  active layer's set is kept in sync with the base edit. */
+template <class T>
+static Array<LayerOverrideTransformEditState> CaptureLayerOverrideTransformEdits(
+    const Array<Pair<Handle<Node>, T>>& nodeData,
+    bool overrideMode)
+{
+    Array<LayerOverrideTransformEditState> result;
+
+    for (const auto& pair : nodeData)
+    {
+        Handle<Entity> entityHandle = DynamicCast<Entity>(pair.first);
+
+        if (!entityHandle.IsValid())
+        {
+            continue;
+        }
+
+        Entity* entity = entityHandle.Get();
+
+        LayerOverrideSystem* overrideSystem = GetLayerOverrideSystemFor(entity);
+
+        if (!overrideSystem)
+        {
+            continue;
+        }
+
+        World* world = entity->GetWorld();
+
+        if (!world)
+        {
+            continue;
+        }
+
+        const Name activeLayer = world->GetActiveLayerName();
+
+        if (!activeLayer || IsDefaultLayer(activeLayer))
+        {
+            continue;
+        }
+
+        const bool hasSet = overrideSystem->HasLayerOverrideSet(entity, activeLayer);
+
+        if (overrideMode)
+        {
+            // Override mode: ensure the active layer's set exists and is applied
+            if (!hasSet)
+            {
+                overrideSystem->AddLayerOverrideSet(entity, activeLayer);
+            }
+
+            if (overrideSystem->GetAppliedOverrideLayer(entity) != activeLayer)
+            {
+                overrideSystem->ApplyOverrides(entity, activeLayer);
+            }
+        }
+        else if (!hasSet)
+        {
+            // Plain base edit - nothing to keep in sync
+            continue;
+        }
+
+        LayerOverrideTransformEditState state;
+        state.entity = entityHandle;
+        state.layer = activeLayer;
+        state.routeToOverride = overrideMode;
+        state.wasOverridden = overrideSystem->IsPropertyOverriddenInLayer(entity, activeLayer, NAME("LocalTransform"));
+        state.postTransform = entity->GetLocalTransform();
+
+        if (state.wasOverridden)
+        {
+            BoxedValue preValue;
+
+            if (overrideSystem->GetLayerOverrideValue(entity, activeLayer, NAME("LocalTransform"), preValue))
+            {
+                state.preTransform = preValue.Get<Transform>();
+            }
+            else
+            {
+                state.wasOverridden = false;
+            }
+        }
+
+        if (overrideMode)
+        {
+            overrideSystem->SetLayerOverrideValue(entity, activeLayer, NAME("LocalTransform"), BoxedValue(state.postTransform));
+        }
+
+        result.PushBack(std::move(state));
+    }
+
+    return result;
+}
+
+// Shared execute/revert loops for gizmo undo actions
+static void ExecuteLayerOverrideTransformEdits(const Array<LayerOverrideTransformEditState>& states)
+{
+    for (const LayerOverrideTransformEditState& state : states)
+    {
+        if (!state.entity.IsValid() || (!state.routeToOverride && !state.wasOverridden))
+        {
+            continue;
+        }
+
+        if (LayerOverrideSystem* overrideSystem = GetLayerOverrideSystemFor(state.entity.Get()))
+        {
+            overrideSystem->SetLayerOverrideValue(state.entity.Get(), state.layer, NAME("LocalTransform"), BoxedValue(state.postTransform));
+        }
+    }
+}
+
+static void RevertLayerOverrideTransformEdits(const Array<LayerOverrideTransformEditState>& states)
+{
+    for (const LayerOverrideTransformEditState& state : states)
+    {
+        if (!state.entity.IsValid() || (!state.routeToOverride && !state.wasOverridden))
+        {
+            continue;
+        }
+
+        LayerOverrideSystem* overrideSystem = GetLayerOverrideSystemFor(state.entity.Get());
+
+        if (!overrideSystem)
+        {
+            continue;
+        }
+
+        if (state.wasOverridden)
+        {
+            overrideSystem->SetLayerOverrideValue(state.entity.Get(), state.layer, NAME("LocalTransform"), BoxedValue(state.preTransform));
+        }
+        else
+        {
+            overrideSystem->RemoveLayerOverrideValue(state.entity.Get(), state.layer, NAME("LocalTransform"));
+        }
+    }
+}
+
 void TranslateEditorGizmo::OnDragEnd(const Handle<Camera>& camera, const MouseEvent& mouseEvent)
 {
     EditorGizmoBase::OnDragEnd(camera, mouseEvent);
@@ -368,14 +567,20 @@ void TranslateEditorGizmo::OnDragEnd(const Handle<Camera>& camera, const MouseEv
                 ? HYP_FORMAT("Translate {}", nodeData[0].first->GetName())
                 : HYP_FORMAT("Translate {} nodes", nodeData.Size());
 
+            EditorSubsystem* overrideModeSubsystem = GetEditorSubsystem();
+            const bool overrideMode = overrideModeSubsystem && overrideModeSubsystem->IsLayerOverrideModeEnabled();
+
+            Array<LayerOverrideTransformEditState> overrideEdits = CaptureLayerOverrideTransformEdits(nodeData, overrideMode);
+
             project->GetActionStack()->PushAction(MakeHandle<FunctionalEditorAction>(
                 text,
-                [focusedNode, node = m_node, focusedFinalPosition, focusedOrigin, nodeData = std::move(nodeData)]() -> EditorActionFunctions
+                [focusedNode, node = m_node, focusedFinalPosition, focusedOrigin, nodeData = std::move(nodeData), overrideEdits = std::move(overrideEdits)]() -> EditorActionFunctions
                 {
                     auto nodeDataPtr = MakeShared<decltype(nodeData)>(std::move(nodeData));
+                    auto overrideEditsPtr = MakeShared<decltype(overrideEdits)>(std::move(overrideEdits));
 
                     return {
-                        [focusedNode, node, focusedFinalPosition, focusedOrigin, nodeDataPtr](EditorSubsystem* editorSubsystem, EditorProject* editorProject)
+                        [focusedNode, node, focusedFinalPosition, focusedOrigin, nodeDataPtr, overrideEditsPtr](EditorSubsystem* editorSubsystem, EditorProject* editorProject)
                         {
                             const auto& nodeData = *nodeDataPtr;
                             const Vec3f translationDelta = focusedFinalPosition - focusedOrigin;
@@ -392,6 +597,8 @@ void TranslateEditorGizmo::OnDragEnd(const Handle<Camera>& camera, const MouseEv
                                 selectedNode->SetWorldTranslation(pair.second + translationDelta);
                             }
 
+                            ExecuteLayerOverrideTransformEdits(*overrideEditsPtr);
+
                             if (Node* parent = node->FindParentWithName("TranslateGizmo"))
                             {
                                 parent->SetWorldTranslation(focusedFinalPosition);
@@ -399,7 +606,7 @@ void TranslateEditorGizmo::OnDragEnd(const Handle<Camera>& camera, const MouseEv
 
                             editorSubsystem->SetFocusedNode(focusedNode, true);
                         },
-                        [focusedNode, node, focusedOrigin, nodeDataPtr](EditorSubsystem* editorSubsystem, EditorProject* editorProject)
+                        [focusedNode, node, focusedOrigin, nodeDataPtr, overrideEditsPtr](EditorSubsystem* editorSubsystem, EditorProject* editorProject)
                         {
                             const auto& nodeData = *nodeDataPtr;
 
@@ -414,6 +621,8 @@ void TranslateEditorGizmo::OnDragEnd(const Handle<Camera>& camera, const MouseEv
 
                                 selectedNode->SetWorldTranslation(pair.second);
                             }
+
+                            RevertLayerOverrideTransformEdits(*overrideEditsPtr);
 
                             if (Node* parent = node->FindParentWithName("TranslateGizmo"))
                             {
@@ -855,16 +1064,22 @@ void RotateEditorGizmo::OnDragEnd(const Handle<Camera>& camera, const MouseEvent
                           return a.first->CalculateDepth() < b.first->CalculateDepth();
                       });
 
+            EditorSubsystem* overrideModeSubsystem = GetEditorSubsystem();
+            const bool overrideMode = overrideModeSubsystem && overrideModeSubsystem->IsLayerOverrideModeEnabled();
+
+            Array<LayerOverrideTransformEditState> overrideEdits = CaptureLayerOverrideTransformEdits(nodeData, overrideMode);
+
             project->GetActionStack()->PushAction(MakeHandle<FunctionalEditorAction>(
                 nodeData.Size() == 1
                     ? HYP_FORMAT("Rotate {}", nodeData[0].first->GetName())
                     : HYP_FORMAT("Rotate {} nodes", nodeData.Size()),
-                [focusedNode, finalRotation, originRotation, deltaRotation, nodeData]() -> EditorActionFunctions
+                [focusedNode, finalRotation, originRotation, deltaRotation, nodeData, overrideEdits = std::move(overrideEdits)]() -> EditorActionFunctions
                 {
                     auto nodeDataPtr = MakeShared<decltype(nodeData)>(std::move(nodeData));
+                    auto overrideEditsPtr = MakeShared<decltype(overrideEdits)>(std::move(overrideEdits));
 
                     return {
-                        [focusedNode, deltaRotation, nodeDataPtr](EditorSubsystem* editorSubsystem, EditorProject*)
+                        [focusedNode, deltaRotation, nodeDataPtr, overrideEditsPtr](EditorSubsystem* editorSubsystem, EditorProject*)
                         {
                             const auto& nodeData = *nodeDataPtr;
 
@@ -881,9 +1096,11 @@ void RotateEditorGizmo::OnDragEnd(const Handle<Camera>& camera, const MouseEvent
                                 selectedNode->SetWorldRotation(deltaRotation * pair.second);
                             }
 
+                            ExecuteLayerOverrideTransformEdits(*overrideEditsPtr);
+
                             editorSubsystem->SetFocusedNode(focusedNode, true);
                         },
-                        [focusedNode, nodeDataPtr](EditorSubsystem* editorSubsystem, EditorProject*)
+                        [focusedNode, nodeDataPtr, overrideEditsPtr](EditorSubsystem* editorSubsystem, EditorProject*)
                         {
                             const auto& nodeData = *nodeDataPtr;
 
@@ -899,6 +1116,8 @@ void RotateEditorGizmo::OnDragEnd(const Handle<Camera>& camera, const MouseEvent
 
                                 selectedNode->SetWorldRotation(pair.second);
                             }
+
+                            RevertLayerOverrideTransformEdits(*overrideEditsPtr);
 
                             editorSubsystem->SetFocusedNode(focusedNode, true);
                         }
@@ -1194,16 +1413,22 @@ void ScaleEditorGizmo::OnDragEnd(const Handle<Camera>& camera, const MouseEvent&
                           return a.first->CalculateDepth() < b.first->CalculateDepth();
                       });
 
+            EditorSubsystem* overrideModeSubsystem = GetEditorSubsystem();
+            const bool overrideMode = overrideModeSubsystem && overrideModeSubsystem->IsLayerOverrideModeEnabled();
+
+            Array<LayerOverrideTransformEditState> overrideEdits = CaptureLayerOverrideTransformEdits(nodeData, overrideMode);
+
             project->GetActionStack()->PushAction(MakeHandle<FunctionalEditorAction>(
                 nodeData.Size() == 1
                     ? HYP_FORMAT("Scale {}", nodeData[0].first->GetName())
                     : HYP_FORMAT("Scale {} nodes", nodeData.Size()),
-                [focusedNode, finalScale, originScale, scaleFactor, nodeData]() -> EditorActionFunctions
+                [focusedNode, finalScale, originScale, scaleFactor, nodeData, overrideEdits = std::move(overrideEdits)]() -> EditorActionFunctions
                 {
                     auto nodeDataPtr = MakeShared<decltype(nodeData)>(std::move(nodeData));
+                    auto overrideEditsPtr = MakeShared<decltype(overrideEdits)>(std::move(overrideEdits));
 
                     return {
-                        [focusedNode, scaleFactor, nodeDataPtr](EditorSubsystem* editorSubsystem, EditorProject*)
+                        [focusedNode, scaleFactor, nodeDataPtr, overrideEditsPtr](EditorSubsystem* editorSubsystem, EditorProject*)
                         {
                             const auto& nodeData = *nodeDataPtr;
 
@@ -1219,9 +1444,11 @@ void ScaleEditorGizmo::OnDragEnd(const Handle<Camera>& camera, const MouseEvent&
                                 selectedNode->SetWorldScale(pair.second.first * scaleFactor);
                             }
 
+                            ExecuteLayerOverrideTransformEdits(*overrideEditsPtr);
+
                             editorSubsystem->SetFocusedNode(focusedNode, true);
                         },
-                        [focusedNode, nodeDataPtr](EditorSubsystem* editorSubsystem, EditorProject*)
+                        [focusedNode, nodeDataPtr, overrideEditsPtr](EditorSubsystem* editorSubsystem, EditorProject*)
                         {
                             const auto& nodeData = *nodeDataPtr;
 
@@ -1236,6 +1463,8 @@ void ScaleEditorGizmo::OnDragEnd(const Handle<Camera>& camera, const MouseEvent&
 
                                 selectedNode->SetWorldScale(pair.second.first);
                             }
+
+                            RevertLayerOverrideTransformEdits(*overrideEditsPtr);
 
                             editorSubsystem->SetFocusedNode(focusedNode, true);
                         }
@@ -1901,6 +2130,87 @@ void EditorSubsystem::SetSnapToGridEnabled(bool snapToGrid)
     //AssertOnThread(g_simThread);
 
     m_snapToGridEnabled = snapToGrid;
+}
+
+//-- Entity layer overrides
+
+Array<Name> EditorSubsystem::GetEntityLayerOverrideSets(Entity* entity) const
+{
+    if (LayerOverrideSystem* overrideSystem = GetLayerOverrideSystemFor(entity))
+    {
+        return overrideSystem->GetSetLayerNames(entity);
+    }
+
+    return {};
+}
+
+bool EditorSubsystem::EntityHasLayerOverrideSet(Entity* entity, Name layerName) const
+{
+    LayerOverrideSystem* overrideSystem = GetLayerOverrideSystemFor(entity);
+
+    return overrideSystem && overrideSystem->HasLayerOverrideSet(entity, layerName);
+}
+
+bool EditorSubsystem::EntityHasLayerOverrideValues(Entity* entity, Name layerName) const
+{
+    LayerOverrideSystem* overrideSystem = GetLayerOverrideSystemFor(entity);
+
+    return overrideSystem && overrideSystem->HasAnyOverriddenProperty(entity, layerName);
+}
+
+void EditorSubsystem::EntityAddLayerOverrideSet(Entity* entity, Name layerName) const
+{
+    if (LayerOverrideSystem* overrideSystem = GetLayerOverrideSystemFor(entity))
+    {
+        overrideSystem->AddLayerOverrideSet(entity, layerName);
+    }
+}
+
+bool EditorSubsystem::EntityRemoveLayerOverrideSet(Entity* entity, Name layerName) const
+{
+    LayerOverrideSystem* overrideSystem = GetLayerOverrideSystemFor(entity);
+
+    return overrideSystem && overrideSystem->RemoveLayerOverrideSet(entity, layerName);
+}
+
+bool EditorSubsystem::IsEntityPropertyOverridden(Entity* entity, Name layerName, Name propertyName) const
+{
+    LayerOverrideSystem* overrideSystem = GetLayerOverrideSystemFor(entity);
+
+    return overrideSystem && overrideSystem->IsPropertyOverriddenInLayer(entity, layerName, propertyName);
+}
+
+bool EditorSubsystem::EntityRemoveLayerOverrideValue(Entity* entity, Name layerName, Name propertyName) const
+{
+    LayerOverrideSystem* overrideSystem = GetLayerOverrideSystemFor(entity);
+
+    return overrideSystem && overrideSystem->RemoveLayerOverrideValue(entity, layerName, propertyName);
+}
+
+Name EditorSubsystem::GetEntityAppliedOverrideLayer(Entity* entity) const
+{
+    if (LayerOverrideSystem* overrideSystem = GetLayerOverrideSystemFor(entity))
+    {
+        return overrideSystem->GetAppliedOverrideLayer(entity);
+    }
+
+    return Name::Invalid();
+}
+
+void EditorSubsystem::EntityApplyLayerOverrides(Entity* entity, Name layerName) const
+{
+    if (LayerOverrideSystem* overrideSystem = GetLayerOverrideSystemFor(entity))
+    {
+        overrideSystem->ApplyOverrides(entity, layerName);
+    }
+}
+
+void EditorSubsystem::EntityRevertLayerOverrides(Entity* entity) const
+{
+    if (LayerOverrideSystem* overrideSystem = GetLayerOverrideSystemFor(entity))
+    {
+        overrideSystem->RevertOverrides(entity);
+    }
 }
 
 #pragma region MeshEditMode
@@ -3295,6 +3605,7 @@ void EditorSubsystem::UpdateGizmoProximityVisibility()
 EditorSubsystem::EditorSubsystem()
     : m_selectedManipulationMode(EditorManipulationMode::None),
       m_snapToGridEnabled(false),
+      m_layerOverrideMode(false),
       m_editorCameraEnabled(false),
       m_shouldCancelNextClick(false),
       m_gizmosHiddenByProximity(false)
@@ -3356,18 +3667,30 @@ EditorSubsystem::~EditorSubsystem()
     delete m_editorDelegates;
 }
 
+const Handle<World>& EditorSubsystem::GetProjectWorld() const
+{
+    if (m_currentProject.IsValid())
+    {
+        return m_currentProject->GetWorld();
+    }
+
+    return nullptr;
+}
+
 void EditorSubsystem::OnAddedToWorld()
 {
-    if (!GetWorld()->GetSubsystem<UISubsystem>())
+    World* world = Subsystem::GetWorld();
+
+    if (!world->GetSubsystem<UISubsystem>())
     {
         HYP_FAIL("EditorSubsystem requires UISubsystem to be initialized");
     }
 
-    GetWorld()->AddSystemT<EditorSpriteSystem>();
+    world->AddSystemT<EditorSpriteSystem>();
 
     m_editorScene = MakeHandle<Scene>(NAME("EditorScene"), SceneFlags::FOREGROUND | SceneFlags::EDITOR);
     m_editorScene->SetIsTransient(true);
-    GetWorld()->AddScene(m_editorScene);
+    world->AddScene(m_editorScene);
 
     InitViewport();
 
@@ -3399,13 +3722,15 @@ void EditorSubsystem::OnRemovedFromWorld()
     {
         vp->OnSceneRemoved(m_editorScene);
     }
+    
+    World* world = Subsystem::GetWorld();
 
-    if (EditorSpriteSystem* spriteSystem = GetWorld()->GetSystem<EditorSpriteSystem>())
+    if (EditorSpriteSystem* spriteSystem = world->GetSystem<EditorSpriteSystem>())
     {
-        GetWorld()->RemoveSystem(spriteSystem);
+        world->RemoveSystem(spriteSystem);
     }
 
-    GetWorld()->RemoveScene(m_editorScene);
+    world->RemoveScene(m_editorScene);
 
     if (m_currentProject)
     {
@@ -4048,7 +4373,7 @@ bool EditorSubsystem::StartSimulation()
 
     gameInstance->StartSimulating();
 
-    if (UISubsystem* uiSubsystem = GetWorld()->GetSubsystem<UISubsystem>())
+    if (UISubsystem* uiSubsystem = Subsystem::GetWorld()->GetSubsystem<UISubsystem>())
     {
         uiSubsystem->SetDebugOverlaysSuppressed(true);
     }
@@ -4081,7 +4406,7 @@ bool EditorSubsystem::StopSimulation()
 
         m_preSimulationProject.Reset();
 
-        if (UISubsystem* uiSubsystem = GetWorld()->GetSubsystem<UISubsystem>())
+        if (UISubsystem* uiSubsystem = Subsystem::GetWorld()->GetSubsystem<UISubsystem>())
         {
             uiSubsystem->SetDebugOverlaysSuppressed(false);
         }
@@ -4112,7 +4437,7 @@ void EditorSubsystem::InitViewport()
     }
     m_editorViewports.Clear();
 
-    UISubsystem* uiSubsystem = GetWorld()->GetSubsystem<UISubsystem>();
+    UISubsystem* uiSubsystem = Subsystem::GetWorld()->GetSubsystem<UISubsystem>();
     Assert(uiSubsystem != nullptr);
 
     Handle<UIPanel> backdropPanel = uiSubsystem->GetUIStage()->CreateUIObject<UIPanel>(NAME("Editor_BackdropPanel"), Vec2i::Zero(), UIObjectSize(100, UIObjectSize::PERCENT));
@@ -5141,7 +5466,11 @@ void EditorSubsystem::UpdateNormalizedCubeSpherePreview(uint32 numDivisions)
     }
 
     Handle<Mesh> mesh = MeshBuilder::NormalizedCubeSphere(numDivisions);
+    mesh->SetIsTransient(true);
     mesh->SetName(NAME("NormalizedCubeSphereMesh_Preview"));
+
+    GetCurrentAssetRegistry()->PutAssetUnique(mesh);
+
     InitObject(mesh);
 
     if (!m_meshPreviewEntity.IsValid())
@@ -5152,6 +5481,7 @@ void EditorSubsystem::UpdateNormalizedCubeSpherePreview(uint32 numDivisions)
         attributes.shaderName = NAME("GeometryPass");
 
         m_meshPreviewMaterial = MakeHandle<Material>(NAME("NormalizedCubeSpherePreviewMaterial"), attributes);
+        m_meshPreviewMaterial->SetIsTransient(true);
         InitObject(m_meshPreviewMaterial);
 
         m_meshPreviewEntity = MakeHandle<Entity>();
@@ -5212,6 +5542,7 @@ void EditorSubsystem::CommitMeshPreview()
     Handle<Mesh> mesh = meshComponent->mesh;
 
     entity->SetName(NAME("NormalizedCubeSphereEntity"));
+    
     mesh->SetName(NAME("NormalizedCubeSphereMesh"));
 
     Handle<FunctionalEditorAction> action = MakeHandle<FunctionalEditorAction>(

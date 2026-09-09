@@ -7,13 +7,17 @@
 #include <ScenePch.hpp>
 
 #include <Scene/EnvProbe.hpp>
+
 #include <Scene/View.hpp>
 #include <Scene/World.hpp>
 #include <Scene/Scene.hpp>
 #include <Scene/Light.hpp>
 #include <Scene/EntityManager.hpp>
+#include <Scene/Layer.hpp>
 
 #include <Scene/Util/SceneHelpers.hpp>
+
+#include <Scene/Systems/LayerOverrideSystem.hpp>
 
 #include <Rendering/Texture.hpp>
 #include <Rendering/RenderInterface.hpp>
@@ -21,6 +25,8 @@
 #include <Rendering/RendererMain.hpp>
 #include <Rendering/DescriptorSet.hpp>
 #include <Rendering/RenderProxy.hpp>
+
+#include <Rendering/EnvProbeCaptureState.hpp>
 
 #include <Rendering/Util/ShaderPropertyDictionary.hpp>
 
@@ -59,6 +65,17 @@ static constexpr EnvProbeDimensions DefaultDimensionsByType[EPT_MAX] = {
 };
 
 static constexpr float EnvProbeCameraNearClip = 0.025f;
+
+namespace {
+
+LayerOverrideSystem* GetLayerOverrideSystem(const EnvProbe* envProbe)
+{
+    World* world = envProbe->GetWorld();
+
+    return world ? world->GetSystem<LayerOverrideSystem>() : nullptr;
+}
+
+} // namespace
 
 static FixedArray<Mat4f, 6> CreateCubemapMatrices(const Vec3f& origin)
 {
@@ -104,6 +121,14 @@ EnvProbe::~EnvProbe()
     // ensure locks are released before destruction ensues
     TUniqueResLock<EnvProbe> resLock(*this);
 
+    DestroyOwnedCaptureState();
+
+    if (m_captureState)
+    {
+        // MUST LIVE HERE!!!! or the capture state will hold dangling ptr to this
+        m_captureState->m_envProbe = nullptr;
+    }
+
     if (AnyOf(m_views, &Handle<View>::IsValid))
     {
         EnqueueDeletion(std::move(m_views));
@@ -119,6 +144,54 @@ EnvProbe::~EnvProbe()
 EnvProbeDimensions EnvProbe::GetDefaultDimensions(EnvProbeType envProbeType)
 {
     return DefaultDimensionsByType[uint32(envProbeType)];
+}
+
+Name EnvProbe::BuildBakedTextureName(Name probeName, Name layerName)
+{
+    if (!layerName.IsValid() || IsDefaultLayer(layerName))
+    {
+        return NAME_FMT("{}_ColorMap", probeName);
+    }
+
+    return NAME_FMT("{}_{}_ColorMap", probeName, layerName);
+}
+
+Name EnvProbe::BuildVisibilityTextureName(Name probeName, Name layerName)
+{
+    if (!layerName.IsValid() || IsDefaultLayer(layerName))
+    {
+        return NAME_FMT("{}_VisibilityMap", probeName);
+    }
+
+    return NAME_FMT("{}_{}_VisibilityMap", probeName, layerName);
+}
+
+void EnvProbe::SyncOwnedCaptureState()
+{
+    if (!OwnsCaptureState())
+    {
+        return;
+    }
+
+    if (!m_captureState)
+    {
+        // REALTIME, we dont want a layer name assoc'd with it
+        m_captureState = new EnvProbeCaptureState(this, Name::Invalid());
+    }
+
+    m_captureState->texture = m_texture;
+    m_captureState->visibilityTexture = m_visibilityTexture;
+}
+
+void EnvProbe::DestroyOwnedCaptureState()
+{
+    if (!m_captureState || !OwnsCaptureState())
+    {
+        return;
+    }
+
+    delete m_captureState;
+    m_captureState = nullptr;
 }
 
 void EnvProbe::SetDimensions(EnvProbeDimensions dimensions)
@@ -173,7 +246,7 @@ void EnvProbe::SetDiffuseStrength(float diffuseStrength)
     SetNeedsRenderProxyUpdate();
 }
 
-void EnvProbe::InitCaptureData()
+void EnvProbe::InitCaptureData(EnvProbeCaptureState* captureState)
 {
     CreateCamera();
     CreateViewData();
@@ -194,6 +267,51 @@ void EnvProbe::InitCaptureData()
     }
 
     EnqueueViewsUpdate();
+
+    if (captureState)
+    {
+        Assert(uint32(m_dimensions) > 0);
+
+        if (ShouldComputePrefilteredEnvMap() && !captureState->texture.IsValid())
+        {
+            captureState->texture = MakeHandle<Texture>(TextureDesc {
+                TextureType::Cubemap,
+                TextureFormat::RGBA16F,
+                Vec3u(Vec2u(uint32(m_dimensions)), 1),
+                TFM_LINEAR_MIPMAP,
+                TFM_LINEAR,
+                TWM_CLAMP_TO_EDGE,
+                1,
+                IU_STORAGE | IU_SAMPLED
+            });
+
+            captureState->texture->SetName(BuildBakedTextureName(GetName(), captureState->layerName));
+            captureState->texture->SetIsTransient(true);
+        }
+
+        if ((m_envProbeFlags & EPF_VISIBILITY) && !captureState->visibilityTexture.IsValid())
+        {
+            captureState->visibilityTexture = MakeHandle<Texture>(TextureDesc {
+                TextureType::Cubemap,
+                TextureFormat::RG16F,
+                Vec3u {
+                    VisibilityTextureDimensions,
+                    VisibilityTextureDimensions,
+                    1
+                },
+                TFM_LINEAR,
+                TFM_LINEAR,
+                TWM_CLAMP_TO_EDGE,
+                1,
+                IU_SAMPLED | IU_STORAGE
+            });
+
+            captureState->visibilityTexture->SetName(BuildVisibilityTextureName(GetName(), captureState->layerName));
+            captureState->visibilityTexture->SetIsTransient(true);
+        }
+
+        return;
+    }
 
     if (ShouldComputePrefilteredEnvMap())
     {
@@ -220,6 +338,8 @@ void EnvProbe::InitCaptureData()
                 // not a persisted bake asset - don't register it below.
                 m_texture->SetIsTransient(true);
             }
+
+            SetNeedsRenderProxyUpdate();
         }
     }
 
@@ -239,6 +359,8 @@ void EnvProbe::InitCaptureData()
             CreateVisibilityTexture();
         }
     }
+
+    SyncOwnedCaptureState();
 }
 
 void EnvProbe::DestroyCaptureData()
@@ -251,6 +373,8 @@ void EnvProbe::DestroyCaptureData()
         EnqueueDeletion(std::move(m_texture));
         EnqueueDeletion(std::move(m_visibilityTexture));
     }
+
+    SyncOwnedCaptureState();
 }
 
 void EnvProbe::CreateCamera()
@@ -340,6 +464,8 @@ void EnvProbe::CreateVisibilityTexture()
 
     GetCurrentAssetRegistry()->PutAssetUnique(m_visibilityTexture);
 
+    SyncOwnedCaptureState();
+
     // Assume the caller will MarkDirty() / SetNeedsRenderProxyUpdate()
 }
 
@@ -367,7 +493,11 @@ void EnvProbe::SetEnvProbeFlags(EnumFlags<EnvProbeFlags> envProbeFlags)
         return;
     }
 
+    DestroyOwnedCaptureState();
+
     m_envProbeFlags = envProbeFlags;
+
+    SyncOwnedCaptureState();
 
     bool shouldForceRerender = false;
     bool dirtyViewData = false;
@@ -738,26 +868,6 @@ void EnvProbe::DestroyViewData()
     }
 }
 
-void EnvProbe::BeginRasterCapture()
-{
-    SetDimensions(GetDefaultDimensions(m_envProbeType));
-
-    const int32 numReadbacks = (ShouldComputeSphericalHarmonics() ? 1 : 0)
-        + ((m_envProbeFlags & EPF_VISIBILITY) ? 1 : 0)
-        + ((m_envProbeFlags & EPF_HIT_MASK) ? 1 : 0);
-
-    m_pendingCaptureReadbacks.Set(numReadbacks, MemoryOrder::RELEASE);
-
-    InitCaptureData();
-
-    needsRender.Store(true);
-}
-
-void EnvProbe::EndRasterCapture()
-{
-    DestroyCaptureData();
-}
-
 Vec3f EnvProbe::GetOrigin(bool fromCenter) const
 {
     if (fromCenter)
@@ -803,6 +913,247 @@ void EnvProbe::SetSphericalHarmonicsData(const SphericalHarmonicsData& shData)
     SetNeedsRenderProxyUpdate();
     MarkDirty();
 }
+
+Handle<Texture> EnvProbe::GetBakedTextureForLayer(Name layerName) const
+{
+    if (!layerName.IsValid() || IsDefaultLayer(layerName))
+    {
+        return GetBakedTexture();
+    }
+
+    LayerOverrideSystem* layerOverrideSystem = GetLayerOverrideSystem(this);
+
+    if (!layerOverrideSystem)
+    {
+        return GetBakedTexture();
+    }
+
+    BoxedValue overrideValue;
+
+    if (!layerOverrideSystem->GetLayerOverrideValue(this, layerName, GetBakedTexturePropertyName(), overrideValue))
+    {
+        return GetBakedTexture();
+    }
+
+    if (overrideValue.Is<Handle<Texture>>())
+    {
+        return overrideValue.Get<Handle<Texture>>();
+    }
+
+    HYP_LOG(Scene, Warning, "Layer override '{}' on EnvProbe '{}' is not a texture",
+        layerName, GetName());
+
+    return GetBakedTexture();
+}
+
+Handle<Texture> EnvProbe::GetVisibilityTextureForLayer(Name layerName) const
+{
+    if (!layerName.IsValid() || IsDefaultLayer(layerName))
+    {
+        return GetVisibilityTexture();
+    }
+
+    LayerOverrideSystem* layerOverrideSystem = GetLayerOverrideSystem(this);
+
+    if (!layerOverrideSystem)
+    {
+        return GetVisibilityTexture();
+    }
+
+    BoxedValue overrideValue;
+
+    if (!layerOverrideSystem->GetLayerOverrideValue(this, layerName, GetVisibilityTexturePropertyName(), overrideValue))
+    {
+        return GetVisibilityTexture();
+    }
+
+    if (overrideValue.Is<Handle<Texture>>())
+    {
+        return overrideValue.Get<Handle<Texture>>();
+    }
+
+    HYP_LOG(Scene, Warning, "Layer override '{}' on EnvProbe '{}' is not a texture",
+        layerName, GetName());
+
+    return GetVisibilityTexture();
+}
+
+SphericalHarmonicsData EnvProbe::GetSphericalHarmonicsDataForLayer(Name layerName) const
+{
+    if (!layerName.IsValid() || IsDefaultLayer(layerName))
+    {
+        return GetSphericalHarmonicsData();
+    }
+
+    LayerOverrideSystem* layerOverrideSystem = GetLayerOverrideSystem(this);
+
+    if (!layerOverrideSystem)
+    {
+        return GetSphericalHarmonicsData();
+    }
+
+    BoxedValue overrideValue;
+
+    if (!layerOverrideSystem->GetLayerOverrideValue(this, layerName, GetSphericalHarmonicsPropertyName(), overrideValue))
+    {
+        return GetSphericalHarmonicsData();
+    }
+
+    if (overrideValue.Is<SphericalHarmonicsData>())
+    {
+        return overrideValue.Get<SphericalHarmonicsData>();
+    }
+
+    HYP_LOG(Scene, Warning, "Layer override '{}' on EnvProbe '{}' is not spherical harmonics data",
+        layerName, GetName());
+
+    return GetSphericalHarmonicsData();
+}
+
+void EnvProbe::SetBakedTextureForLayer(const Handle<Texture>& texture, Name layerName)
+{
+    if (!layerName.IsValid() || IsDefaultLayer(layerName))
+    {
+        SetBakedTexture(texture);
+
+        return;
+    }
+
+    LayerOverrideSystem* layerOverrideSystem = GetLayerOverrideSystem(this);
+
+    if (!layerOverrideSystem)
+    {
+        HYP_LOG(Scene, Error, "Cannot assign baked texture for layer '{}' on EnvProbe '{}': no LayerOverrideSystem",
+            layerName, GetName());
+
+        return;
+    }
+
+    if (GetBakedTextureForLayer(layerName) == texture)
+    {
+        return;
+    }
+
+    if (texture.IsValid())
+    {
+        texture->SetName(BuildBakedTextureName(GetName(), layerName));
+
+        if (!texture->IsTransient())
+        {
+            GetCurrentAssetRegistry()->PutAssetUnique(texture);
+        }
+    }
+
+    layerOverrideSystem->AddLayerOverrideSet(this, layerName);
+    layerOverrideSystem->SetLayerOverrideValue(this, layerName, GetBakedTexturePropertyName(), BoxedValue(texture));
+
+    SetNeedsRenderProxyUpdate();
+    MarkDirty();
+}
+
+void EnvProbe::SetVisibilityTextureForLayer(const Handle<Texture>& visibilityTexture, Name layerName)
+{
+    if (!layerName.IsValid() || IsDefaultLayer(layerName))
+    {
+        SetVisibilityTexture(visibilityTexture);
+
+        return;
+    }
+
+    LayerOverrideSystem* layerOverrideSystem = GetLayerOverrideSystem(this);
+
+    if (!layerOverrideSystem)
+    {
+        HYP_LOG(Scene, Error, "Cannot assign visibility texture for layer '{}' on EnvProbe '{}': no LayerOverrideSystem",
+            layerName, GetName());
+
+        return;
+    }
+
+    if (GetVisibilityTextureForLayer(layerName) == visibilityTexture)
+    {
+        return;
+    }
+
+    if (visibilityTexture.IsValid())
+    {
+        visibilityTexture->SetName(BuildVisibilityTextureName(GetName(), layerName));
+        GetCurrentAssetRegistry()->PutAssetUnique(visibilityTexture);
+    }
+
+    layerOverrideSystem->AddLayerOverrideSet(this, layerName);
+    layerOverrideSystem->SetLayerOverrideValue(this, layerName, GetVisibilityTexturePropertyName(), BoxedValue(visibilityTexture));
+
+    SetNeedsRenderProxyUpdate();
+    MarkDirty();
+}
+
+void EnvProbe::SetSphericalHarmonicsDataForLayer(const SphericalHarmonicsData& shData, Name layerName)
+{
+    if (!layerName.IsValid() || IsDefaultLayer(layerName))
+    {
+        SetSphericalHarmonicsData(shData);
+
+        return;
+    }
+
+    LayerOverrideSystem* layerOverrideSystem = GetLayerOverrideSystem(this);
+
+    if (!layerOverrideSystem)
+    {
+        HYP_LOG(Scene, Error, "Cannot assign spherical harmonics for layer '{}' on EnvProbe '{}': no LayerOverrideSystem",
+            layerName, GetName());
+
+        return;
+    }
+
+    if (GetSphericalHarmonicsDataForLayer(layerName) == shData)
+    {
+        return;
+    }
+
+    layerOverrideSystem->AddLayerOverrideSet(this, layerName);
+    layerOverrideSystem->SetLayerOverrideValue(this, layerName, GetSphericalHarmonicsPropertyName(), BoxedValue(shData));
+
+    SetNeedsRenderProxyUpdate();
+    MarkDirty();
+}
+
+#ifdef HYP_EDITOR
+
+Array<Name> EnvProbe::GetBakedLayerNames() const
+{
+    Array<Name> layerNames;
+
+    if (IsBaked())
+    {
+        layerNames.PushBack(g_defaultLayerName);
+    }
+
+    LayerOverrideSystem* layerOverrideSystem = GetLayerOverrideSystem(this);
+
+    if (!layerOverrideSystem)
+    {
+        return layerNames;
+    }
+
+    // Reflection probes bake a texture, ambient probes bake SH.
+    const Name propertyName = ShouldComputeSphericalHarmonics()
+        ? GetSphericalHarmonicsPropertyName()
+        : GetBakedTexturePropertyName();
+
+    for (Name layerName : layerOverrideSystem->GetSetLayerNames(this))
+    {
+        if (layerOverrideSystem->IsPropertyOverriddenInLayer(this, layerName, propertyName))
+        {
+            layerNames.PushBack(layerName);
+        }
+    }
+
+    return layerNames;
+}
+
+#endif // HYP_EDITOR
 
 void EnvProbe::Update(float delta)
 {
@@ -1020,7 +1371,7 @@ void EnvProbe::UpdateRenderProxy(RenderProxyEnvProbe* proxy)
 
     if (m_envProbeFlags & EPF_VISIBILITY)
     {
-        if (proxy->visibilityTexture != m_visibilityTexture)
+        if (proxy->visibilityTexture != m_visibilityTexture.Get())
         {
             proxy->forceRebind = true;
             proxy->visibilityTexture = m_visibilityTexture.Get();
@@ -1074,6 +1425,8 @@ void EnvProbe::SetBakedTexture(const Handle<Texture>& texture)
 
     m_texture = texture;
 
+    SyncOwnedCaptureState();
+
     MarkDirty();
     SetNeedsRenderProxyUpdate();
 }
@@ -1103,6 +1456,8 @@ void EnvProbe::SetVisibilityTexture(const Handle<Texture>& visibilityTexture)
 
         Invalidate(/* forceRerender */ true);
     }
+
+    SyncOwnedCaptureState();
 
     MarkDirty();
     SetNeedsRenderProxyUpdate();
@@ -1138,12 +1493,21 @@ void ReflectionProbe::BakeCubemap()
 
         return;
     }
-    
-    Array<Handle<Layer>> layers = SceneHelpers::GetTargetLayers(*this);
 
-    if (layers.Empty())
+    // Bake only the active layer; the result is written to that layer's override set (or the base
+    // values for the Default layer).
+    const Handle<Layer>& layer = world->GetActiveLayer();
+
+    if (!layer.IsValid())
     {
-        HYP_LOG(Editor, Error, "Cannot bake {}: could not resolve a target layer for it", GetName());
+        HYP_LOG(Editor, Error, "Cannot bake {}: could not resolve the active layer", GetName());
+
+        return;
+    }
+
+    if (!HasNoLayers() && !IsInLayer(layer->layerId))
+    {
+        HYP_LOG(Editor, Error, "Cannot bake {}: it is not in the active layer '{}'", GetName(), layer->name);
 
         return;
     }
@@ -1155,10 +1519,7 @@ void ReflectionProbe::BakeCubemap()
         bakerSubsystem = world->AddSubsystem<BakerSubsystem>();
     }
 
-    for (const Handle<Layer>& layer : layers)
-    {
-        bakerSubsystem->EnqueueBake(layer->bakeLayer, StaticCast<EnvProbe>(MakeStrongRef(this)));
-    }
+    bakerSubsystem->EnqueueBake(layer->bakeLayer, StaticCast<EnvProbe>(MakeStrongRef(this)));
 }
 
 #endif
@@ -1187,6 +1548,8 @@ void SkyProbe::CreateTexture()
 
     m_texture->SetName(NAME_FMT("{}_ColorMap", GetName()));
     m_texture->SetIsTransient(true);
+
+    SyncOwnedCaptureState();
 }
 
 #pragma endregion SkyProbe
@@ -1214,11 +1577,20 @@ void IrradianceProbe::RecomputeIrradiance()
         return;
     }
 
-    Array<Handle<Layer>> layers = SceneHelpers::GetTargetLayers(*this);
+    // Bake only the active layer; the result is written to that layer's override set (or the base
+    // values for the Default layer).
+    const Handle<Layer>& layer = world->GetActiveLayer();
 
-    if (layers.Empty())
+    if (!layer.IsValid())
     {
-        HYP_LOG(Editor, Error, "Cannot bake {}: could not resolve a target layer for it", GetName());
+        HYP_LOG(Editor, Error, "Cannot bake {}: could not resolve the active layer", GetName());
+
+        return;
+    }
+
+    if (!HasNoLayers() && !IsInLayer(layer->layerId))
+    {
+        HYP_LOG(Editor, Error, "Cannot bake {}: it is not in the active layer '{}'", GetName(), layer->name);
 
         return;
     }
@@ -1230,10 +1602,7 @@ void IrradianceProbe::RecomputeIrradiance()
         bakerSubsystem = world->AddSubsystem<BakerSubsystem>();
     }
 
-    for (const Handle<Layer>& layer : layers)
-    {
-        bakerSubsystem->EnqueueBake(layer->bakeLayer, StaticCast<EnvProbe>(MakeStrongRef(this)));
-    }
+    bakerSubsystem->EnqueueBake(layer->bakeLayer, StaticCast<EnvProbe>(MakeStrongRef(this)));
 }
 
 #endif // HYP_EDITOR

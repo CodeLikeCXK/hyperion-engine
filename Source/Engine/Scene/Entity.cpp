@@ -14,6 +14,7 @@
 
 #include <Scene/EntityManager.hpp>
 #include <Scene/EntityTag.hpp>
+#include <Scene/Systems/LayerOverrideSystem.hpp>
 
 #include <Core/Utilities/GlobalContext.hpp>
 
@@ -24,6 +25,7 @@
 #include <Scene/Components/VisibilityStateComponent.hpp>
 #include <Scene/Components/BoundingBoxComponent.hpp>
 #include <Scene/Components/LightmapElementComponent.hpp>
+#include <Scene/Components/LayerOverridesComponent.hpp>
 
 #include <Scripting/EntityScripting.hpp>
 
@@ -37,6 +39,11 @@
 #include <Asset/AssetObject.hpp>
 #include <Asset/AssetRegistry.hpp>
 #include <Asset/SerializationUtils.hpp>
+
+#include <Core/DataProcessing/HMF/HMF.hpp>
+
+#include <Core/Reflection/Property.hpp>
+#include <Core/Reflection/Field.hpp>
 
 #include <Entity.generated.inl>
 
@@ -199,6 +206,15 @@ Handle<Node> Entity::Clone() const
 
         Array<Name> serializedLayers = SerializeLayers();
         cloned->DeserializeLayers(serializedLayers);
+
+        // The LayerOverridesComponent is excluded from component serialization, so copy it explicitly.
+        if (LayerOverridesComponent* overrides = entityManager->TryGetComponent<LayerOverridesComponent>(this))
+        {
+            LayerOverridesComponent overridesCopy;
+            overridesCopy.sets = overrides->sets;
+
+            cloned->AddComponent<LayerOverridesComponent>(std::move(overridesCopy));
+        }
     }
 
     return cloned;
@@ -212,6 +228,75 @@ void Entity::Init()
     Node::Init();
 
     SetReady(true);
+
+    FlushPendingLayerOverrides();
+}
+
+void Entity::SetPendingLayerOverrides(Array<EntityLayerOverrideSet>&& sets)
+{
+    auto& pendingSets = m_entityInitInfo.pendingLayerOverrides;
+
+    if (pendingSets.Empty())
+    {
+        pendingSets.Reserve(sets.Size());
+    }
+
+    for (EntityLayerOverrideSet& set : sets)
+    {
+        // scenes may carry a "Default" set from before we changed "Default" == Base value set. drop it.
+        if (IsDefaultLayer(set.layerName))
+        {
+            continue;
+        }
+
+        pendingSets.PushBack(std::move(set));
+    }
+}
+
+void Entity::FlushPendingLayerOverrides()
+{
+    auto& pendingSets = m_entityInitInfo.pendingLayerOverrides;
+
+    if (pendingSets.Empty())
+    {
+        return;
+    }
+
+    EntityManager* entityManager = GetEntityManager();
+
+    if (!entityManager || !entityManager->HasEntity(Id()))
+    {
+        // Not registered with an EntityManager yet; keep the sets stashed until Init() runs.
+        return;
+    }
+
+    if (LayerOverridesComponent* existing = entityManager->TryGetComponent<LayerOverridesComponent>(this))
+    {
+        existing->sets.Clear();
+
+        for (EntityLayerOverrideSet& set : pendingSets)
+        {
+            existing->sets.PushBack(std::move(set));
+        }
+
+        existing->appliedLayer = Name::Invalid();
+        existing->baseSnapshot.Clear();
+    }
+    else
+    {
+        LayerOverridesComponent component;
+        component.sets.Reserve(pendingSets.Size());
+
+        for (EntityLayerOverrideSet& set : pendingSets)
+        {
+            component.sets.PushBack(std::move(set));
+        }
+
+        entityManager->AddComponent<LayerOverridesComponent>(this, std::move(component));
+    }
+
+    // Stashed values have been consumed; release the memory they held.
+    pendingSets.Clear();
 }
 
 bool Entity::ReceivesUpdate() const
@@ -346,6 +431,12 @@ void Entity::OnAddedToWorld(World* world)
         {
             m_entityInitInfo.layerNames.Clear();
         }
+    }
+
+    // Apply property overrides for the World's active layer, if any
+    if (LayerOverrideSystem* layerOverrideSystem = world->GetSystem<LayerOverrideSystem>())
+    {
+        layerOverrideSystem->OnEntityAddedToWorld(this);
     }
 }
 

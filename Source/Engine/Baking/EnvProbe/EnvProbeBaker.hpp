@@ -71,6 +71,8 @@ public:
         return TypeOf<EnvProbe>();
     }
 
+    Name GetBakeLayerName() const override;
+
 protected:
     virtual BakeDataBase& GetBakeData() override
     {

@@ -31,6 +31,7 @@ class Texture;
 class View;
 class Light;
 class Camera;
+struct EnvProbeCaptureState;
 struct RenderProxyEnvProbe;
 
 ENGINE_API extern Pool* g_scenePool;
@@ -249,6 +250,36 @@ public:
 
     HYP_METHOD(Property = "SHData", NoScriptBindings)
     void SetSphericalHarmonicsData(const SphericalHarmonicsData& shData);
+
+    //-- Per-layer stuff
+
+    static Name GetBakedTexturePropertyName()
+    {
+        return NAME("BakedTexture");
+    }
+
+    static Name GetVisibilityTexturePropertyName()
+    {
+        return NAME("VisibilityTexture");
+    }
+
+    static Name GetSphericalHarmonicsPropertyName()
+    {
+        return NAME("SHData");
+    }
+
+    Handle<Texture> GetBakedTextureForLayer(Name layerName) const;
+    Handle<Texture> GetVisibilityTextureForLayer(Name layerName) const;
+    SphericalHarmonicsData GetSphericalHarmonicsDataForLayer(Name layerName) const;
+
+    void SetBakedTextureForLayer(const Handle<Texture>& texture, Name layerName);
+    void SetVisibilityTextureForLayer(const Handle<Texture>& visibilityTexture, Name layerName);
+    void SetSphericalHarmonicsDataForLayer(const SphericalHarmonicsData& shData, Name layerName);
+
+#ifdef HYP_EDITOR
+    HYP_METHOD(EditorOnly)
+    Array<Name> GetBakedLayerNames() const;
+#endif // HYP_EDITOR
     
     HYP_FORCE_INLINE const Vec4f& GetHitMaskData() const
     {
@@ -257,10 +288,21 @@ public:
 
     void SetHitMaskData(const Vec4f& hitMaskData);
 
-    //-- Baking with raster (todo: move out of here?)
+    //-- Raster capture
 
-    void BeginRasterCapture();
-    void EndRasterCapture();
+    HYP_FORCE_INLINE EnvProbeCaptureState* GetCaptureState() const
+    {
+        return m_captureState;
+    }
+
+    /*! \brief Probes that render in realtime own their capture state. */
+    HYP_FORCE_INLINE bool OwnsCaptureState() const
+    {
+        return IsRealtime() || IsSkyProbe();
+    }
+
+    static Name BuildBakedTextureName(Name probeName, Name layerName);
+    static Name BuildVisibilityTextureName(Name probeName, Name layerName);
 
     HYP_FORCE_INLINE void NotifyCaptureReadbackComplete()
     {
@@ -275,7 +317,6 @@ public:
     //--
 
     virtual void Invalidate(bool forceRerender = false);
-
     virtual void Update(float delta) override;
 
     void UpdateRenderProxy(RenderProxyEnvProbe* proxy);
@@ -303,6 +344,8 @@ public:
     AtomicFlag needsRender;
 
 protected:
+    friend struct EnvProbeCaptureState;
+
     virtual void OnAttachedToNode(Node* node) override;
     virtual void OnDetachedFromNode(Node* node) override;
 
@@ -319,8 +362,16 @@ protected:
         return !IsRealtime();
     }
 
-    void InitCaptureData();
+    void InitCaptureData(EnvProbeCaptureState* captureState = nullptr);
     void DestroyCaptureData();
+
+    /*! \brief Create the owned capture state if missing and alias its targets to the live
+     *  textures. No-op for probes that don't own their capture state. */
+    void SyncOwnedCaptureState();
+
+    /*! \brief Delete the owned capture state. Never touches a bake job's attached capture state,
+     *  as those belong to probes that don't own their capture state. */
+    void DestroyOwnedCaptureState();
 
     void CreateCamera();
     void RemoveCamera();
@@ -360,11 +411,19 @@ protected:
     HYP_FIELD(Property = "HitMaskData", Editor = false, Serialize)
     Vec4f m_hitMaskData;
 
+    //-- Capture / readback
+
     /// Number of outstanding read backs
     AtomicVar<int32> m_pendingCaptureReadbacks;
 
+    /// Capture state while rendering through the raster path; owned by this probe when
+    /// OwnsCaptureState() (realtime / sky), otherwise attached by a bake job's capture
+    EnvProbeCaptureState* m_captureState = nullptr;
+
     /// for reading/writing back data
     SharedMutex m_mutex;
+
+    //--
 };
 
 HYP_CLASS()

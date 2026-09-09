@@ -68,7 +68,17 @@ public:
         return TypeOf<LightmapVolume>();
     }
 
+    Name GetBakeLayerName() const override;
+    
+    /// If true, we should skip UV1 generation for meshes
+    bool ShouldReuseExistingPacking() const
+    {
+        return m_reuseExistingPacking;
+    }
+
 protected:
+    bool ComputeShouldReuseExistingPacking();
+
     virtual BakeDataBase& GetBakeData() override
     {
         return m_bakeData;
@@ -97,6 +107,13 @@ protected:
     Handle<LightmapVolume> m_volume;
     BakeData<LightmapVolume> m_bakeData;
     Array<LightmapElementId, BakerAllocator> m_lightmapElementIds;
+
+    // Decided once per bake in Build(); see ComputeShouldReuseExistingPacking
+    bool m_reuseExistingPacking = false;
+
+    // The packing-shape hash captured when that decision was made; written to the volume when a
+    // new packing is generated in OnBuildReady()
+    uint64 m_packingEntryHash = 0;
 
     Task<BakeData<LightmapVolume>> m_atlasBuildTask;
 };

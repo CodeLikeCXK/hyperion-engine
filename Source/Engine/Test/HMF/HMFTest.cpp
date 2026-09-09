@@ -45,6 +45,9 @@
 #include <Scene/Camera/Camera.hpp>
 #include <Scene/Light.hpp>
 #include <Scene/Node.hpp>
+#include <Scene/Entity.hpp>
+#include <Scene/EntityManager.hpp>
+#include <Scene/Components/LayerOverridesComponent.hpp>
 
 #include <Scene/Animation/Animation.hpp>
 
@@ -2161,6 +2164,105 @@ CameraOrthoRect {
         BoxedToHMF(BoxedValue(strArr), text);
         Check("Array<String>: non-empty output", !text.Empty(), text);
     }
+
+#if 0
+    {
+        // $LayerOverrides schema section: the writer emits per-layer diffs stored on the
+        // entity's LayerOverridesComponent; the parser collects them (typed against the
+        // entity's own class schema) through the engine's sink, which writes them back
+        // into the component.
+        Handle<Entity> entity = MakeHandle<Entity>(NAME("OverrideTestEntity"));
+
+        Check("LayerOverrides: entity created", entity.IsValid());
+
+        if (entity.IsValid())
+        {
+            InitObject(entity);
+
+            EntityManager* entityManager = entity->GetEntityManager();
+
+            Check("LayerOverrides: entity manager", entityManager != nullptr);
+
+            if (entityManager)
+            {
+                LayerOverridesComponent* component
+                    = &entityManager->AddComponent<LayerOverridesComponent>(entity.Get(), LayerOverridesComponent {});
+
+                EntityLayerOverrideSet morningSet;
+                morningSet.layerName = NAME("Morning");
+                morningSet.propertyOverrides.PushBack(
+                    LayerPropertyOverride { NAME("NodeFlags"), BoxedValue(EnumFlags<NodeFlags>(NodeFlags::MobilityDynamic)) });
+
+                component->sets.PushBack(std::move(morningSet));
+
+                EntityLayerOverrideSet eveningSet;
+                eveningSet.layerName = NAME("Evening");
+                eveningSet.propertyOverrides.PushBack(
+                    LayerPropertyOverride { NAME("Name"), BoxedValue(NAME("EveningSun")) });
+
+                component->sets.PushBack(std::move(eveningSet));
+
+                ToHMFOptions opts;
+                opts.skipTransientProperties = true;
+
+                String overrideText;
+                ObjectToHMF(entity->InstanceClass(), BoxedValue(entity), overrideText, &opts);
+
+                Check("LayerOverrides: section present", overrideText.Contains("$LayerOverrides"), overrideText);
+                Check("LayerOverrides: Morning key present", overrideText.Contains("Morning"), overrideText);
+                Check("LayerOverrides: Evening key present", overrideText.Contains("Evening"), overrideText);
+                Check("LayerOverrides: NodeFlags override emitted",
+                      overrideText.Contains("NodeFlags = MobilityDynamic"), overrideText);
+                Check("LayerOverrides: Name override emitted",
+                      overrideText.Contains("Name = EveningSun"), overrideText);
+
+                // Parse back into a fresh entity and verify the stored override sets
+                Handle<Entity> parseTarget = MakeHandle<Entity>(NAME("OverrideParseEntity"));
+                InitObject(parseTarget);
+
+                BoxedValue targetBoxed = BoxedValue(parseTarget);
+
+                HMF::ParseResult parseResult = HMF::Parse(overrideText, nullptr, &targetBoxed);
+                Check("LayerOverrides: parse succeeds", Success(parseResult), parseResult.GetError().GetMessage());
+
+                if (Success(parseResult) && parseTarget.IsValid())
+                {
+                    const LayerOverridesComponent* parsedComponent
+                        = parseTarget->GetEntityManager()->TryGetComponent<LayerOverridesComponent>(parseTarget.Get());
+
+                    Check("LayerOverrides RT: component exists", parsedComponent != nullptr);
+
+                    if (parsedComponent)
+                    {
+                        Check("LayerOverrides RT: Morning set exists",
+                              HasLayerOverrideSet(parsedComponent->sets, NAME("Morning")));
+                        Check("LayerOverrides RT: Evening set exists",
+                              HasLayerOverrideSet(parsedComponent->sets, NAME("Evening")));
+                        Check("LayerOverrides RT: NodeFlags overridden in Morning",
+                              IsPropertyOverriddenInLayer(parsedComponent->sets, NAME("Morning"), NAME("NodeFlags")));
+                        Check("LayerOverrides RT: Name overridden in Evening",
+                              IsPropertyOverriddenInLayer(parsedComponent->sets, NAME("Evening"), NAME("Name")));
+
+                        BoxedValue flagsOverride;
+                        bool readFlags = GetLayerOverrideValue(parsedComponent->sets, NAME("Morning"), NAME("NodeFlags"), flagsOverride);
+
+                        Check("LayerOverrides RT: NodeFlags override value read", readFlags);
+                        Check("LayerOverrides RT: NodeFlags override is MobilityDynamic",
+                              readFlags
+                                  && flagsOverride.Get<EnumFlags<NodeFlags>>() == EnumFlags<NodeFlags>(NodeFlags::MobilityDynamic));
+
+                        BoxedValue nameOverride;
+                        bool readName = GetLayerOverrideValue(parsedComponent->sets, NAME("Evening"), NAME("Name"), nameOverride);
+
+                        Check("LayerOverrides RT: Name override value read", readName);
+                        Check("LayerOverrides RT: Name override is EveningSun",
+                              readName && nameOverride.Get<Name>() == NAME("EveningSun"));
+                    }
+                }
+            }
+        }
+    }
+#endif
 
     HYP_LOG(Engine, Info, "========== HMF Test Results: {} passed, {} failed ==========",
             g_passCount, g_failCount);

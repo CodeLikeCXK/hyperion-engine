@@ -136,13 +136,13 @@ public:
     HYP_METHOD()
     void SetName(Name name) override;
 
-    HYP_METHOD(Property = "LightmapVolumeId", Editor = false, Serialize = true)
+    HYP_METHOD(Property = "LightmapVolumeId", Editor = false, Serialize = true, NoLayerOverride)
     LightmapVolumeId GetLightmapVolumeId() const
     {
         return m_id;
     }
 
-    HYP_METHOD(Property = "LightmapVolumeId", Editor = false, Serialize = true)
+    HYP_METHOD(Property = "LightmapVolumeId", Editor = false, Serialize = true, NoLayerOverride)
     void SetLightmapVolumeId(LightmapVolumeId id);
 
     HYP_FORCE_INLINE Span<const Handle<Texture>> GetAtlasTextures(AtlasTextureType type) const
@@ -161,6 +161,16 @@ public:
     const Handle<Texture>& GetAtlasTexture(uint16 atlasIndex, AtlasTextureType type) const;
     void SetAtlasTexture(uint16 atlasIndex, AtlasTextureType type, const Handle<Texture>& texture);
 
+    FixedArray<Handle<Texture>, MaxAtlasesPerLightmapVolume> GetAtlasTexturesForLayer(AtlasTextureType type, Name layerName) const;
+
+    void SetAtlasTextureForLayer(uint16 atlasIndex, AtlasTextureType type, const Handle<Texture>& texture, Name layerName);
+    void ClearLayerAtlasTextureOverrides(uint32 preserveTextureTypesMask = 0);
+
+#ifdef HYP_EDITOR
+    HYP_METHOD(EditorOnly)
+    Array<Name> GetBakedLayerNames() const;
+#endif // HYP_EDITOR
+
     HYP_FORCE_INLINE const LightmapVolumeAtlas& GetAtlas(uint16 atlasIndex) const
     {
         AssertDebug(atlasIndex < m_atlases.Size());
@@ -177,6 +187,16 @@ public:
         return m_atlases.ToSpan();
     }
 
+    HYP_FORCE_INLINE uint64 GetPackingHash() const
+    {
+        return m_packingHash;
+    }
+
+    HYP_FORCE_INLINE void SetPackingHash(uint64 packingHash)
+    {
+        m_packingHash = packingHash;
+    }
+
     /*! \brief Add a LightmapElement to this volume. */
     bool AddElement(Vec2u dimensions, LightmapElement*& outElement, bool shrinkToFit = true, float downscaleLimit = 0.1f);
 
@@ -186,6 +206,8 @@ public:
     void RemoveAllElements(uint32 preserveTextureTypesMask = 0);
 
     void UpdateRenderProxy(RenderProxyLightmapVolume* proxy);
+
+    static Name GetAtlasTexturesPropertyName(AtlasTextureType type);
 
 #pragma region Actions
 
@@ -223,10 +245,13 @@ private:
     HYP_FIELD(Property = "BentNormalAtlasTextures", Serialize, Editor = false)
     FixedArray<Handle<Texture>, MaxAtlasesPerLightmapVolume> m_bentNormalAtlasTextures;
 
-    HYP_FIELD(Property = "Atlases", Serialize, Editor = false)
+    HYP_FIELD(Property = "Atlases", Serialize, Editor = false, NoLayerOverride)
     Array<LightmapVolumeAtlas> m_atlases;
 
-    HYP_FIELD(Property = "LightmapVolumeId", Editor = false, Serialize)
+    HYP_FIELD(Property = "PackingHash", Serialize, Editor = false, NoLayerOverride)
+    uint64 m_packingHash = 0;
+
+    HYP_FIELD(Property = "LightmapVolumeId", Editor = false, Serialize, NoLayerOverride)
     LightmapVolumeId m_id;
 };
 

@@ -4,6 +4,7 @@
 #include <Scene/EnvProbe.hpp>
 #include <Scene/FogVolume.hpp>
 #include <Scene/World.hpp>
+#include <Scene/Layer.hpp>
 
 #include <Scene/Util/SceneHelpers.hpp>
 
@@ -20,6 +21,16 @@
 namespace Hyperion {
 
 EDITOR_API HYP_DECLARE_LOG_CHANNEL(Editor);
+
+namespace {
+
+/// Based on the active world Layer, should we include the Entity in the bake?
+bool ShouldBakeEntity(Layer& layer, World& world, Entity& entity)
+{
+    return (entity.HasNoLayers() || entity.IsInLayer(layer.layerId));
+}
+
+} // namespace
 
 #pragma region GenerateLightmapsEditorTask
 
@@ -77,6 +88,16 @@ void GenerateLightmapsEditorTask::Start()
         return;
     }
 
+    Handle<Layer> activeLayer = m_world->GetActiveLayer();
+    Assert(activeLayer.IsValid());
+
+    if (!activeLayer.IsValid())
+    {
+        HYP_LOG(Editor, Error, "No active layer set for world; cannot bake");
+
+        return;
+    }
+
     BakerSubsystem* bakerSubsystem = m_world->GetSubsystem<BakerSubsystem>();
 
     if (!bakerSubsystem)
@@ -84,42 +105,53 @@ void GenerateLightmapsEditorTask::Start()
         bakerSubsystem = m_world->AddSubsystem<BakerSubsystem>();
     }
 
+    uint32 numEnqueued = 0;
+
     for (const Handle<ObjectBase>& source : m_sources)
     {
         Handle<Entity> entitySource = DynamicCast<Entity>(source);
         Assert(entitySource.IsValid());
 
-        Array<Handle<Layer>> layers = SceneHelpers::GetTargetLayers(*entitySource);
-
-        if (layers.Empty())
+        if (!ShouldBakeEntity(*activeLayer, *m_world, *entitySource))
         {
-            HYP_LOG(Editor, Error, "Cannot bake {}: could not resolve any target layer(s) for it", source->Id());
+            HYP_LOG(Editor, Warning, "Skipping bake for {}: it is not in the active layer '{}'",
+                source->Id(), activeLayer->name);
 
             continue;
         }
 
-        for (const Handle<Layer>& layer : layers)
+        Task<void> task;
+
+        if (source->IsA<LightmapVolume>())
         {
-            Task<void> task;
-
-            if (source->IsA<LightmapVolume>())
-            {
-                task = bakerSubsystem->EnqueueBake(layer->bakeLayer, StaticCast<LightmapVolume>(source));
-            }
-            else if (source->IsA<EnvProbe>())
-            {
-                task = bakerSubsystem->EnqueueBake(layer->bakeLayer, StaticCast<EnvProbe>(source));
-            }
-            else if (source->IsA<FogVolume>())
-            {
-                task = bakerSubsystem->EnqueueBake(layer->bakeLayer, StaticCast<FogVolume>(source));
-            }
-
-            if (task.IsValid())
-            {
-                m_tasks.PushBack(std::move(task));
-            }
+            task = bakerSubsystem->EnqueueBake(activeLayer->bakeLayer, StaticCast<LightmapVolume>(source));
         }
+        else if (source->IsA<EnvProbe>())
+        {
+            task = bakerSubsystem->EnqueueBake(activeLayer->bakeLayer, StaticCast<EnvProbe>(source));
+        }
+        else if (source->IsA<FogVolume>())
+        {
+            task = bakerSubsystem->EnqueueBake(activeLayer->bakeLayer, StaticCast<FogVolume>(source));
+        }
+
+        if (task.IsValid())
+        {
+            m_tasks.PushBack(std::move(task));
+
+            ++numEnqueued;
+        }
+        else
+        {
+            HYP_LOG(Editor, Warning, "Could not enqueue bake for {}: a bake may already be in progress for it",
+                source->Id());
+        }
+    }
+
+    if (numEnqueued == 0)
+    {
+        HYP_LOG(Editor, Error, "No bakes were enqueued for {} source(s); ensure they belong to the active layer '{}' and have no bake currently running",
+            m_sources.Size(), activeLayer->name);
     }
 }
 
@@ -246,26 +278,47 @@ void GenerateBentNormalsEditorTask::Start()
 
     const uint32 bentNormalOnlyMask = 1u << uint32(Baking::LightmapShadingType::BENT_NORMAL);
 
+    Handle<Layer> activeLayer = m_world->GetActiveLayer();
+    Assert(activeLayer.IsValid());
+
+    if (!activeLayer.IsValid())
+    {
+        HYP_LOG(Editor, Warning, "Active layer was not valid?!?");
+
+        return;
+    }
+
+    uint32 numEnqueued = 0;
+
     for (const Handle<LightmapVolume>& volume : m_volumes)
     {
-        Array<Handle<Layer>> layers = SceneHelpers::GetTargetLayers(*volume);
-
-        if (layers.Empty())
+        if (!ShouldBakeEntity(*activeLayer, *m_world, *volume))
         {
-            HYP_LOG(Editor, Error, "Cannot bake {}: could not resolve any target layer(s) for it", volume->Id());
+            HYP_LOG(Editor, Warning, "Skipping bent normals bake for {}: it is not in the active layer '{}'",
+                volume->Id(), activeLayer->name);
 
             continue;
         }
 
-        for (const Handle<Layer>& layer : layers)
-        {
-            Task<void> task = lightmapperSubsystem->EnqueueBake(layer->bakeLayer, volume, bentNormalOnlyMask);
+        Task<void> task = lightmapperSubsystem->EnqueueBake(activeLayer->bakeLayer, volume, bentNormalOnlyMask);
 
-            if (task.IsValid())
-            {
-                m_tasks.PushBack(std::move(task));
-            }
+        if (task.IsValid())
+        {
+            m_tasks.PushBack(std::move(task));
+
+            ++numEnqueued;
         }
+        else
+        {
+            HYP_LOG(Editor, Warning, "Could not enqueue bent normals bake for {}: a bake may already be in progress for it",
+                volume->Id());
+        }
+    }
+
+    if (numEnqueued == 0)
+    {
+        HYP_LOG(Editor, Error, "No bent normals bakes were enqueued for {} volume(s); ensure they belong to the active layer '{}' and have no bake currently running",
+            m_volumes.Size(), activeLayer->name);
     }
 }
 

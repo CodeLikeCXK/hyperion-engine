@@ -94,3 +94,8 @@ compile_commands.json
 
 # misc lock files.
 *.lock.json
+
+Tools/*/build/**/*
+
+# Generated engine bindings for Strata.
+Engine.strata

@@ -21,6 +21,70 @@ namespace Hyperion.Editor.ViewModels
         public ICommand AddComponentCommand { get; }
         public ICommand RemoveComponentCommand { get; }
 
+        public ObservableCollection<LayerCopySourceOptionViewModel> CopyLayerSources { get; } = new ObservableCollection<LayerCopySourceOptionViewModel>();
+
+        private LayerCopySourceOptionViewModel? _selectedCopyLayerSource;
+        public LayerCopySourceOptionViewModel? SelectedCopyLayerSource
+        {
+            get => _selectedCopyLayerSource;
+            set
+            {
+                if (SetProperty(ref _selectedCopyLayerSource, value) && ApplyCopyFromLayerCommand is AsyncRelayCommand relayCommand)
+                {
+                    relayCommand.RaiseCanExecuteChanged();
+                }
+            }
+        }
+
+        private bool _hasCopyLayerSources;
+        public bool HasCopyLayerSources
+        {
+            get => _hasCopyLayerSources;
+            private set => SetProperty(ref _hasCopyLayerSources, value);
+        }
+
+        private bool _hasActiveLayerOverrides;
+        public bool HasActiveLayerOverrides
+        {
+            get => _hasActiveLayerOverrides;
+            private set
+            {
+                if (SetProperty(ref _hasActiveLayerOverrides, value) && ResetLayerOverridesCommand is AsyncRelayCommand relayCommand)
+                {
+                    relayCommand.RaiseCanExecuteChanged();
+                }
+            }
+        }
+
+        /// <summary>Display-only view over <see cref="Properties"/>: the rows the active layer overrides.</summary>
+        public ObservableCollection<InspectorPropertyViewModelBase> OverriddenProperties { get; } = new ObservableCollection<InspectorPropertyViewModelBase>();
+
+        private int _overriddenPropertyCount;
+        public int OverriddenPropertyCount
+        {
+            get => _overriddenPropertyCount;
+            private set
+            {
+                if (SetProperty(ref _overriddenPropertyCount, value))
+                {
+                    OnPropertyChanged(nameof(HasOverriddenProperties));
+                    OnPropertyChanged(nameof(ShowNoOverridesHint));
+                    OnPropertyChanged(nameof(OverriddenPropertiesHeader));
+                }
+            }
+        }
+
+        public bool HasOverriddenProperties => _overriddenPropertyCount > 0;
+
+        public bool ShowNoOverridesHint => CanUseLayerOverrides && !HasOverriddenProperties;
+
+        public string OverriddenPropertiesHeader => _overriddenPropertyCount == 1
+            ? $"1 PROPERTY OVERRIDDEN IN {ActiveLayerLabel.ToUpperInvariant()}"
+            : $"{_overriddenPropertyCount} PROPERTIES OVERRIDDEN IN {ActiveLayerLabel.ToUpperInvariant()}";
+
+        public ICommand ApplyCopyFromLayerCommand { get; }
+        public ICommand ResetLayerOverridesCommand { get; }
+
         private bool _hasActions;
         public bool HasActions
         {
@@ -93,6 +157,68 @@ namespace Hyperion.Editor.ViewModels
             private set => SetProperty(ref _entityLayers, value);
         }
 
+        public bool IsDefaultLayer
+        {
+            get => (_activeLayerDisplay ?? string.Empty) == string.Empty
+                || (_activeLayerDisplay ?? string.Empty) == "Default";
+        }
+
+        /// <summary>False on the Default layer, whose values are the entity's base values - there is nothing to override into.</summary>
+        public bool CanUseLayerOverrides => !IsDefaultLayer;
+
+        /// <summary>
+        /// Publishes the active layer to the shared edit context. The Default layer is the base
+        /// values, so it is published as "no layer" and every edit routes to the base.
+        /// </summary>
+        private void ApplyActiveLayerToEditContext()
+        {
+            LayerOverrideEditContext.ActiveLayerName = IsDefaultLayer ? null : ActiveLayerDisplay;
+
+            if (IsDefaultLayer)
+            {
+                LayerOverrideMode = false;
+            }
+        }
+
+        private bool _layerOverrideMode;
+        public bool LayerOverrideMode
+        {
+            get => _layerOverrideMode;
+            set
+            {
+                if (SetProperty(ref _layerOverrideMode, value))
+                {
+                    LayerOverrideEditContext.OverrideModeActive = value;
+
+                    _ = EngineManager.PostToSimThread(() =>
+                    {
+                        EngineManager.EditorGame?.EditorSubsystem?.SetLayerOverrideMode(value);
+                    });
+                    _ = RefreshCopyLayerSourcesAsync();
+                }
+            }
+        }
+
+        /// <summary>Active layer name for display, falling back to "Default" before the World reports one.</summary>
+        public string ActiveLayerLabel => string.IsNullOrEmpty(_activeLayerDisplay) ? "Default" : _activeLayerDisplay!;
+
+        private string? _activeLayerDisplay;
+        public string? ActiveLayerDisplay
+        {
+            get => _activeLayerDisplay;
+            private set
+            {
+                if (SetProperty(ref _activeLayerDisplay, value))
+                {
+                    OnPropertyChanged(nameof(IsDefaultLayer));
+                    OnPropertyChanged(nameof(CanUseLayerOverrides));
+                    OnPropertyChanged(nameof(ShowNoOverridesHint));
+                    OnPropertyChanged(nameof(ActiveLayerLabel));
+                    OnPropertyChanged(nameof(OverriddenPropertiesHeader));
+                }
+            }
+        }
+
         private Node? _selectedNode;
         public Node? SelectedNode
         {
@@ -113,6 +239,8 @@ namespace Hyperion.Editor.ViewModels
         {
             AddComponentCommand = new AsyncRelayCommand(AddComponentAsync, CanAddComponent);
             RemoveComponentCommand = new RelayCommand<object>(RemoveComponent, CanRemoveComponent);
+            ApplyCopyFromLayerCommand = new AsyncRelayCommand(_ => ApplyCopyFromLayerAsync(), _ => SelectedCopyLayerSource != null);
+            ResetLayerOverridesCommand = new AsyncRelayCommand(_ => ResetLayerOverridesAsync(), _ => HasActiveLayerOverrides);
         }
 
         ~InspectorViewModel()
@@ -156,11 +284,21 @@ namespace Hyperion.Editor.ViewModels
             Components.Clear();
             AddableComponents.Clear();
             SceneProperties.Clear();
+            CopyLayerSources.Clear();
 
             AttachedScript = null;
             HasAttachedScript = false;
             EntityTags = null;
             EntityLayers = null;
+
+            SelectedCopyLayerSource = null;
+            HasCopyLayerSources = false;
+            HasActiveLayerOverrides = false;
+
+            OverriddenProperties.Clear();
+            OverriddenPropertyCount = 0;
+
+            LayerOverrideEditContext.Reset();
 
             HasActions = false;
             HasComponents = false;
@@ -296,6 +434,11 @@ namespace Hyperion.Editor.ViewModels
                 EntityTags = new EntityTagsViewModel(entity);
                 EntityLayers = new EntityLayersViewModel(entity);
 
+                LayerOverrideEditContext.CurrentEntity = entity;
+
+                _ = RefreshActiveLayerInfoAsync();
+                _ = RefreshOverrideSignifiersAsync();
+
                 _ = EngineManager.PostToSimThread(() =>
                 {
                     EntityManager? mgr = entity.EntityManager;
@@ -397,6 +540,364 @@ namespace Hyperion.Editor.ViewModels
             {
                 _ = EntityLayers.RefreshAsync();
             }
+
+            _ = RefreshOverrideSignifiersAsync();
+            _ = RefreshActiveLayerOverridesAsync();
+        }
+
+        /// <summary>
+        /// Reads the World's active layer name for the selected entity and updates the
+        /// layer-override edit context + panel hint text.
+        /// </summary>
+        public async Task RefreshActiveLayerInfoAsync()
+        {
+            string activeLayerName = string.Empty;
+
+            await EngineManager.PostToSimThread(() =>
+            {
+                World? world = null;
+
+                if (SelectedNode is Entity selectedEntity && selectedEntity.IsValid)
+                {
+                    world = selectedEntity.World;
+                }
+
+                if (world == null)
+                {
+                    EditorProject? project = EngineManager.CurrentProject;
+
+                    if (project != null)
+                    {
+                        world = project.World;
+                    }
+                }
+
+                if (world != null)
+                {
+                    activeLayerName = world.GetActiveLayerName().ToString();
+                }
+            });
+
+            await Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                ActiveLayerDisplay = activeLayerName.Length > 0 ? activeLayerName : null;
+                ApplyActiveLayerToEditContext();
+            });
+
+            _ = RefreshCopyLayerSourcesAsync();
+            _ = RefreshActiveLayerOverridesAsync();
+        }
+
+        /// <summary>
+        /// Refreshes per-row override signifiers ("LayerA, LayerB override this value") for the
+        /// selected entity's entity-level property rows.
+        /// </summary>
+        public async Task RefreshOverrideSignifiersAsync()
+        {
+            if (SelectedNode is not Entity entity || !entity.IsValid)
+            {
+                return;
+            }
+
+            // Entity-level rows only (component / delegate-backed rows are not overridable in v1);
+            // Name is identity metadata and never overridable
+            List<InspectorPropertyViewModelBase> rows = Properties
+                .Where(p => p.IsEntityLevelRow && p.Property.Name != new Name("Name", weak: true))
+                .ToList();
+
+            List<string> layerNames = new();
+            List<bool> overriddenFlags = new();
+
+            await EngineManager.PostToSimThread(() =>
+            {
+                Name[] sets = EntityLayerOverrides.GetSetLayerNames(entity);
+
+                foreach (Name set in sets)
+                {
+                    layerNames.Add(set.ToString());
+                }
+
+                foreach (InspectorPropertyViewModelBase row in rows)
+                {
+                    Name propertyName = row.Property.Name;
+
+                    foreach (Name layer in sets)
+                    {
+                        overriddenFlags.Add(EntityLayerOverrides.IsPropertyOverridden(entity, layer, propertyName));
+                    }
+                }
+            });
+
+            await Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                if (SelectedNode is not Entity selectedEntity || selectedEntity.NativeAddress != entity.NativeAddress)
+                {
+                    return;
+                }
+
+                int flagIndex = 0;
+                string? currentLayerName = LayerOverrideEditContext.ActiveLayerName;
+
+                OverriddenProperties.Clear();
+
+                foreach (InspectorPropertyViewModelBase row in rows)
+                {
+                    List<string> overriddenLayers = new();
+
+                    foreach (string layerName in layerNames)
+                    {
+                        if (flagIndex < overriddenFlags.Count && overriddenFlags[flagIndex++])
+                        {
+                            overriddenLayers.Add(layerName);
+                        }
+                    }
+
+                    row.SetOverrideInfo(overriddenLayers, currentLayerName);
+
+                    if (row.IsOverriddenByCurrentLayer)
+                    {
+                        OverriddenProperties.Add(row);
+                    }
+                }
+
+                OverriddenPropertyCount = OverriddenProperties.Count;
+            });
+        }
+
+        /// <summary>
+        /// Called when the World's active layer changes; refreshes property rows and override
+        /// signifiers (overrides may have applied natively) and updates the edit context.
+        /// </summary>
+        public void OnWorldActiveLayerChanged(string layerName)
+        {
+            Dispatcher.UIThread.VerifyAccess();
+
+            ActiveLayerDisplay = string.IsNullOrEmpty(layerName) ? null : layerName;
+            ApplyActiveLayerToEditContext();
+
+            if (SelectedNode == null || !SelectedNode.IsValid)
+            {
+                return;
+            }
+
+            // Overrides for the new active layer were just applied natively - re-read all rows
+            foreach (InspectorPropertyViewModelBase propertyVm in Properties)
+            {
+                propertyVm.RefreshValue();
+            }
+
+            _ = RefreshOverrideSignifiersAsync();
+            _ = RefreshCopyLayerSourcesAsync();
+            _ = RefreshActiveLayerOverridesAsync();
+        }
+
+        /// <summary>
+        /// Refreshes whether the selected entity has any property overrides in the World's
+        /// active layer; drives the "Reset Layer Overrides" button enablement.
+        /// </summary>
+        private async Task RefreshActiveLayerOverridesAsync()
+        {
+            Entity? entity = SelectedNode as Entity;
+            string? layerName = ActiveLayerDisplay;
+
+            bool hasOverrides = false;
+            Entity? capturedEntity = null;
+
+            if (entity != null && entity.IsValid && !string.IsNullOrEmpty(layerName))
+            {
+                capturedEntity = entity;
+
+                string capturedLayer = layerName;
+
+                await EngineManager.PostToSimThread(() =>
+                {
+                    hasOverrides = EntityLayerOverrides.HasValues(capturedEntity, new Name(capturedLayer));
+                });
+            }
+
+            await Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                if (capturedEntity == null
+                    || SelectedNode is not Entity currentEntity || !currentEntity.IsValid
+                    || currentEntity.NativeAddress != capturedEntity.NativeAddress)
+                {
+                    return;
+                }
+
+                HasActiveLayerOverrides = hasOverrides;
+            });
+        }
+
+        /// <summary>
+        /// Invokes the native <c>EditorCommandResetLayerOverrides</c> command, removing all
+        /// property overrides the entity has in the World's active layer (restoring base
+        /// values). Undoable.
+        /// </summary>
+        private async Task ResetLayerOverridesAsync()
+        {
+            if (SelectedNode is not Entity entity || !entity.IsValid)
+            {
+                return;
+            }
+
+            if (string.IsNullOrEmpty(ActiveLayerDisplay))
+            {
+                return;
+            }
+
+            Entity capturedEntity = entity;
+
+            await EngineManager.PostToSimThread(() =>
+            {
+                EngineManager.EditorGame?.EditorSubsystem?.ExecuteCommandByName(
+                    new Name("EditorCommandResetLayerOverrides"),
+                    capturedEntity.NativeAddress.ToString());
+            });
+
+            // Update enablement immediately - there is nothing left to reset on this layer now
+            await RefreshActiveLayerOverridesAsync();
+
+            // Re-read all rows + override signifiers (overrides were dropped; rows show base values)
+            OnPropertyValueChanged();
+        }
+
+        /// <summary>
+        /// Rebuilds the "Copy Properties from Layer" source options: the base state plus every
+        /// World layer except the current edit target (the active layer when override mode is
+        /// on, base otherwise). Copying a source onto itself would be a no-op.
+        /// </summary>
+        private async Task RefreshCopyLayerSourcesAsync()
+        {
+            Entity? entity = SelectedNode as Entity;
+
+            if (entity == null || !entity.IsValid)
+            {
+                CopyLayerSources.Clear();
+                SelectedCopyLayerSource = null;
+                HasCopyLayerSources = false;
+
+                return;
+            }
+
+            Entity capturedEntity = entity;
+            List<string> layerNames = new List<string>();
+
+            await EngineManager.PostToSimThread(() =>
+            {
+                World? world = capturedEntity.World;
+
+                if (world == null)
+                {
+                    EditorProject? project = EngineManager.CurrentProject;
+
+                    if (project != null)
+                    {
+                        world = project.World;
+                    }
+                }
+
+                if (world == null)
+                {
+                    return;
+                }
+
+                foreach (Name layerName in world.GetLayerNames())
+                {
+                    layerNames.Add(layerName.ToString());
+                }
+            });
+
+            await Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                if (SelectedNode is not Entity currentEntity || !currentEntity.IsValid
+                    || currentEntity.NativeAddress != capturedEntity.NativeAddress)
+                {
+                    return;
+                }
+
+                string? targetLayerName = LayerOverrideMode ? ActiveLayerDisplay : null;
+                string? previousSelection = SelectedCopyLayerSource?.Name;
+
+                CopyLayerSources.Clear();
+
+                if (targetLayerName != null)
+                {
+                    CopyLayerSources.Add(new LayerCopySourceOptionViewModel("Base", isBase: true));
+                }
+
+                foreach (string layerName in layerNames)
+                {
+                    if (layerName == targetLayerName)
+                    {
+                        continue;
+                    }
+
+                    // Default holds the base values, so it is already covered by the "Base" option
+                    if (layerName == "Default")
+                    {
+                        continue;
+                    }
+
+                    CopyLayerSources.Add(new LayerCopySourceOptionViewModel(layerName, isBase: false));
+                }
+
+                HasCopyLayerSources = CopyLayerSources.Count > 0;
+
+                SelectedCopyLayerSource = previousSelection != null
+                    ? CopyLayerSources.FirstOrDefault(option => option.Name == previousSelection)
+                    : null;
+            });
+        }
+
+        /// <summary>
+        /// Invokes the native <c>EditorCommandCopyLayerProperties</c> command: it computes the
+        /// minimal diff to make the current edit target (the active layer's override set when
+        /// override mode is on, otherwise the entity's base values) match the selected source's
+        /// effective values, applies it as a single undoable action, and prunes overrides that
+        /// would end up redundant (e.g. copying from Base empties the target layer's override
+        /// set).
+        /// </summary>
+        private async Task ApplyCopyFromLayerAsync()
+        {
+            LayerCopySourceOptionViewModel? sourceOption = SelectedCopyLayerSource;
+
+            if (sourceOption == null)
+            {
+                return;
+            }
+
+            if (SelectedNode is not Entity entity || !entity.IsValid)
+            {
+                return;
+            }
+
+            // The Default layer is the base values, so copying while it is active targets base
+            bool targetIsLayer = !IsDefaultLayer && !string.IsNullOrEmpty(ActiveLayerDisplay);
+            string targetDisplay = targetIsLayer ? ActiveLayerDisplay! : "Base";
+
+            if (!targetIsLayer && sourceOption.IsBase)
+            {
+                return; // base -> base is a no-op
+            }
+
+            if (targetIsLayer && !sourceOption.IsBase && sourceOption.Name == targetDisplay)
+            {
+                return; // layer -> itself is a no-op
+            }
+
+            await EngineManager.PostToSimThread(() =>
+            {
+                EngineManager.EditorGame?.EditorSubsystem?.ExecuteCommandByName(
+                    new Name("EditorCommandCopyLayerProperties"),
+                    entity.NativeAddress.ToString(),
+                    sourceOption.IsBase ? "1" : "0",
+                    sourceOption.IsBase ? "-" : sourceOption.Name,
+                    targetIsLayer ? "0" : "1",
+                    targetIsLayer ? targetDisplay : "-");
+            });
+
+            // Re-read all rows + override signifiers (the command may have changed values)
+            OnPropertyValueChanged();
         }
 
         private void OnScenePropertyValueChanged()
@@ -729,5 +1230,19 @@ namespace Hyperion.Editor.ViewModels
             get => _isEnabled;
             set => SetProperty(ref _isEnabled, value);
         }
+    }
+
+    public class LayerCopySourceOptionViewModel : ViewModelBase
+    {
+        public LayerCopySourceOptionViewModel(string name, bool isBase)
+        {
+            Name = name;
+            IsBase = isBase;
+        }
+
+        public string Name { get; }
+
+        /// <summary>True when this option refers to the entity's base state rather than a layer.</summary>
+        public bool IsBase { get; }
     }
 }

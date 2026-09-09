@@ -180,6 +180,10 @@ protected:
     Handle<Node> m_node;
     struct InputMouseLockScope* m_mouseLockScope;
 
+    // Keeps the gizmo in sync when the focused node's transform changes externally
+    // (e.g. layer overrides applied on active-layer switch)
+    DelegateHandler m_focusedNodeTransformHandler;
+
 private:
     EditorSubsystem* m_editorSubsystem;
     WeakHandle<EditorProject> m_currentProject;
@@ -465,6 +469,13 @@ public:
         return m_editorScene;
     }
 
+    /// Use GetProjectWorld() instead if you need the project's world
+    /// Otherwise, you can cast to Subsystem and call GetWorld on that.
+    World* GetWorld() const = delete;
+
+    HYP_METHOD()
+    const Handle<World>& GetProjectWorld() const;
+
     HYP_METHOD()
     bool StartSimulation();
 
@@ -588,6 +599,50 @@ public:
 
     HYP_METHOD()
     void SetSnapToGridEnabled(bool snapToGrid);
+
+    HYP_METHOD()
+    bool IsLayerOverrideModeEnabled() const
+    {
+        return m_layerOverrideMode;
+    }
+
+    HYP_METHOD()
+    void SetLayerOverrideMode(bool enabled)
+    {
+        m_layerOverrideMode = enabled;
+    }
+
+    //-- Layer overrides
+
+    HYP_METHOD()
+    Array<Name> GetEntityLayerOverrideSets(Entity* entity) const;
+
+    HYP_METHOD()
+    bool EntityHasLayerOverrideSet(Entity* entity, Name layerName) const;
+
+    HYP_METHOD()
+    bool EntityHasLayerOverrideValues(Entity* entity, Name layerName) const;
+
+    HYP_METHOD()
+    void EntityAddLayerOverrideSet(Entity* entity, Name layerName) const;
+
+    HYP_METHOD()
+    bool EntityRemoveLayerOverrideSet(Entity* entity, Name layerName) const;
+
+    HYP_METHOD()
+    bool IsEntityPropertyOverridden(Entity* entity, Name layerName, Name propertyName) const;
+
+    HYP_METHOD()
+    bool EntityRemoveLayerOverrideValue(Entity* entity, Name layerName, Name propertyName) const;
+
+    HYP_METHOD()
+    Name GetEntityAppliedOverrideLayer(Entity* entity) const;
+
+    HYP_METHOD()
+    void EntityApplyLayerOverrides(Entity* entity, Name layerName) const;
+
+    HYP_METHOD()
+    void EntityRevertLayerOverrides(Entity* entity) const;
 
     HYP_METHOD()
     bool IsPhysicsDebugDrawEnabled() const;
@@ -800,6 +855,10 @@ private:
     } m_meshEditState;
 
     bool m_snapToGridEnabled;
+
+    // When true, editor property/transform edits route into the active layer's override set
+    // instead of the base property set (Entity "$LayerOverrides" feature).
+    bool m_layerOverrideMode;
 
     WeakHandle<EditorGizmoBase> m_hoveredGizmo;
     WeakHandle<Node> m_hoveredGizmoNode;
