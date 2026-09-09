@@ -51,7 +51,7 @@ namespace Hyperion.Editor.ViewModels
             }
         }
 
-        public string ShowOnlyActiveLayerIconKind => ShowOnlyActiveLayer ? "EyeOff" : "Eye";
+        public string ShowOnlyActiveLayerIconKind => ShowOnlyActiveLayer ? "EyeClosed" : "Eye";
 
         private DelegateHandler? _onSelectedNodeChanged;
 

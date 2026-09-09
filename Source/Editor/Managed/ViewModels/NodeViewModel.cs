@@ -77,17 +77,17 @@ namespace Hyperion.Editor.ViewModels
 
         public string IconKind => _node switch
         {
-            DirectionalLight    => "Sun",
+            DirectionalLight    => "Lightbulb",
             PointLight          => "Lightbulb",
-            SpotLight           => "Spotlight",
-            AreaRectLight       => "RectangleHorizontal",
-            Camera              => "Video",
-            ReflectionProbe     => "Orbit",
-            ParticleVolume      => "Sparkles",
-            InstancedMeshProxy  => "SquaresUnite",
-            Bone                => "Bone",
-            VolumeBase          => "Box",
-            Entity              => "Shapes",
+            SpotLight           => "Lightbulb",
+            AreaRectLight       => "HorizontalRule",
+            Camera              => "DeviceCamera",
+            ReflectionProbe     => "Globe",
+            ParticleVolume      => "Sparkle",
+            InstancedMeshProxy  => "Combine",
+            Bone                => "GitBranch",
+            VolumeBase          => "Package",
+            Entity              => "CircleLarge",
             _                   => "Circle",
         };
 

@@ -1,5 +1,4 @@
 using Avalonia;
-using Avalonia.Vulkan;
 using System;
 using System.Reflection;
 using System.Runtime.InteropServices;
@@ -17,7 +16,7 @@ namespace Hyperion.Editor
         public static AppBuilder BuildAvaloniaApp()
             => AppBuilder.Configure<App>()
                 .With(new MacOSPlatformOptions { ShowInDock = true })
-                .With(new Win32PlatformOptions {  RenderingMode = [Win32RenderingMode.Software] /*OverlayPopups = true*/ })
+                .With(new Win32PlatformOptions { /*OverlayPopups = true*/ })
                 .UsePlatformDetect()
                 .LogToTrace();
     }

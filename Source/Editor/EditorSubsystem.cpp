@@ -2654,6 +2654,43 @@ void EditorSubsystem::CaptureMeshEditBaseline()
     m_meshEditState.baselineMesh = MakeWeakRef(mesh);
 }
 
+void EditorSubsystem::SyncBoxPhysicsShapeToMeshBounds(const Handle<Node>& node)
+{
+    Entity* entity = node.IsValid() ? DynamicCast<Entity>(node.Get()) : nullptr;
+
+    if (entity == nullptr)
+    {
+        return;
+    }
+
+    MeshComponent* meshComponent = entity->TryGetComponent<MeshComponent>();
+    RigidBodyComponent* rigidBodyComponent = entity->TryGetComponent<RigidBodyComponent>();
+
+    if (meshComponent == nullptr || !meshComponent->mesh.IsValid() || rigidBodyComponent == nullptr)
+    {
+        return;
+    }
+
+    if (!rigidBodyComponent->shape.IsValid() || rigidBodyComponent->shape->GetType() != PhysicsShapeType::Box)
+    {
+        return;
+    }
+
+    // Clone the shape first to prevent stomping something used by another
+    Handle<PhysicsShape> uniqueShape = EnsureUniquePhysicsShape(entity);
+    Handle<BoxPhysicsShape> boxShape = DynamicCast<BoxPhysicsShape>(uniqueShape);
+
+    if (!boxShape.IsValid())
+    {
+        return;
+    }
+
+    boxShape->SetAABB(meshComponent->mesh->GetAABB());
+    boxShape->Invalidate();
+
+    entity->AddTag<EntityTag::UpdatePhysicsShape>();
+}
+
 void EditorSubsystem::CommitMeshEdits()
 {
     AssertOnThread(g_simThread);
@@ -2708,6 +2745,7 @@ void EditorSubsystem::CommitMeshEdits()
                     if (Handle<Node> node = nodeWeak.Lock(); node.IsValid())
                     {
                         WriteAllMeshVertexPositions(node, /* lodIndex */ 0, finalPositions);
+                        editorSubsystem->SyncBoxPhysicsShapeToMeshBounds(node);
                     }
                 },
                 [nodeWeak, baselinePositions](EditorSubsystem* editorSubsystem, EditorProject* editorProject)
@@ -2715,6 +2753,7 @@ void EditorSubsystem::CommitMeshEdits()
                     if (Handle<Node> node = nodeWeak.Lock(); node.IsValid())
                     {
                         WriteAllMeshVertexPositions(node, /* lodIndex */ 0, baselinePositions);
+                        editorSubsystem->SyncBoxPhysicsShapeToMeshBounds(node);
                     }
                 }
             };
@@ -5514,7 +5553,6 @@ void EditorSubsystem::CommitMeshPreview()
     }
 
     Handle<Entity> entity = m_meshPreviewEntity;
-    Handle<Material> material = m_meshPreviewMaterial;
 
     m_meshPreviewEntity->Remove();
     m_meshPreviewEntity.Reset();
@@ -5541,8 +5579,17 @@ void EditorSubsystem::CommitMeshPreview()
 
     Handle<Mesh> mesh = meshComponent->mesh;
 
+    // Replace the transient preview material with a proper, non-transient one for the committed entity
+    MaterialAttributes attributes;
+    attributes.shaderName = NAME("GeometryPass");
+
+    Handle<Material> material = MakeHandle<Material>(NAME("NormalizedCubeSphereMaterial"), attributes);
+    InitObject(material);
+
+    meshComponent->material = material;
+
     entity->SetName(NAME("NormalizedCubeSphereEntity"));
-    
+
     mesh->SetName(NAME("NormalizedCubeSphereMesh"));
 
     Handle<FunctionalEditorAction> action = MakeHandle<FunctionalEditorAction>(
