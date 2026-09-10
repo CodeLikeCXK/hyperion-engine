@@ -10,7 +10,7 @@ That, and the editor shouldn't suck.
 
 ---
 
-![Hyperion Engine Screenshot - Baked lightmaps in Editor view](/Documentation/Images/LightmapBakeEditor.png)
+![Hyperion Engine Screenshot - Baked lightmaps in Editor view](/Documentation/Images/image.png)
 
 ## Some Features
 - Clustered deferred shading supporting a large number of dynamic lights while maintaining good frame times. Uses forward clustered shading for translucent materials.
@@ -47,3 +47,9 @@ Where _do_ we use AI? Primarily, we aim to keep the usage of AI directed towards
  - some UI stuff
  - bug fixes `hey, take a look at this callstack...`
  - code review
+
+## Credits
+- [Avalonia](https://github.com/AvaloniaUI/Avalonia)
+- [Dock.Avalonia](https://github.com/wieslawsoltes/Dock)
+- [Codicons](https://github.com/microsoft/vscode-codicons)
+- [Material Icons](https://github.com/google/material-design-icons)
