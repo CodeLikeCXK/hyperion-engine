@@ -37,22 +37,6 @@ namespace Hyperion.Editor.ViewModels
         private Scene? _scene;
         public Scene? Scene => _scene;
 
-        private bool _showOnlyActiveLayer = true;
-        public bool ShowOnlyActiveLayer
-        {
-            get => _showOnlyActiveLayer;
-            set
-            {
-                if (SetProperty(ref _showOnlyActiveLayer, value))
-                {
-                    OnPropertyChanged(nameof(ShowOnlyActiveLayerIconKind));
-                    RefreshFilter();
-                }
-            }
-        }
-
-        public string ShowOnlyActiveLayerIconKind => ShowOnlyActiveLayer ? "EyeClosed" : "Eye";
-
         private DelegateHandler? _onSelectedNodeChanged;
 
         public void AttachToScene(Scene? scene)
@@ -108,13 +92,6 @@ namespace Hyperion.Editor.ViewModels
 
             if (_scene == null)
             {
-                return;
-            }
-
-            if (!ShowOnlyActiveLayer)
-            {
-                SetFilteredOutRecursive(RootNodes, filteredOut: false);
-
                 return;
             }
 
@@ -177,13 +154,13 @@ namespace Hyperion.Editor.ViewModels
                 return hidden;
             }
 
-            Name activeLayerName = world.GetActiveLayerName();
+            LayersMask activeLayers = world.GetActiveLayers();
 
             void Walk(Node node)
             {
                 if (node is Entity entity)
                 {
-                    bool isVisible = entity.HasNoLayers() || entity.IsInLayerByName(activeLayerName);
+                    bool isVisible = entity.HasNoLayers() || entity.IsInAnyLayers(activeLayers);
 
                     if (!isVisible)
                     {

@@ -4,7 +4,7 @@
 #include <Scene/EnvProbe.hpp>
 #include <Scene/FogVolume.hpp>
 #include <Scene/World.hpp>
-#include <Scene/Layer.hpp>
+#include <Scene/Swatch.hpp>
 
 #include <Scene/Util/SceneHelpers.hpp>
 
@@ -21,16 +21,6 @@
 namespace Hyperion {
 
 EDITOR_API HYP_DECLARE_LOG_CHANNEL(Editor);
-
-namespace {
-
-/// Based on the active world Layer, should we include the Entity in the bake?
-bool ShouldBakeEntity(Layer& layer, World& world, Entity& entity)
-{
-    return (entity.HasNoLayers() || entity.IsInLayer(layer.layerId));
-}
-
-} // namespace
 
 #pragma region GenerateLightmapsEditorTask
 
@@ -88,12 +78,12 @@ void GenerateLightmapsEditorTask::Start()
         return;
     }
 
-    Handle<Layer> activeLayer = m_world->GetActiveLayer();
-    Assert(activeLayer.IsValid());
+    Handle<Swatch> activeSwatch = m_world->GetActiveSwatch();
+    Assert(activeSwatch.IsValid());
 
-    if (!activeLayer.IsValid())
+    if (!activeSwatch.IsValid())
     {
-        HYP_LOG(Editor, Error, "No active layer set for world; cannot bake");
+        HYP_LOG(Editor, Error, "No active swatch set for world; cannot bake");
 
         return;
     }
@@ -112,27 +102,19 @@ void GenerateLightmapsEditorTask::Start()
         Handle<Entity> entitySource = DynamicCast<Entity>(source);
         Assert(entitySource.IsValid());
 
-        if (!ShouldBakeEntity(*activeLayer, *m_world, *entitySource))
-        {
-            HYP_LOG(Editor, Warning, "Skipping bake for {}: it is not in the active layer '{}'",
-                source->Id(), activeLayer->name);
-
-            continue;
-        }
-
         Task<void> task;
 
         if (source->IsA<LightmapVolume>())
         {
-            task = bakerSubsystem->EnqueueBake(activeLayer->bakeLayer, StaticCast<LightmapVolume>(source));
+            task = bakerSubsystem->EnqueueBake(activeSwatch->bakeLayer, StaticCast<LightmapVolume>(source));
         }
         else if (source->IsA<EnvProbe>())
         {
-            task = bakerSubsystem->EnqueueBake(activeLayer->bakeLayer, StaticCast<EnvProbe>(source));
+            task = bakerSubsystem->EnqueueBake(activeSwatch->bakeLayer, StaticCast<EnvProbe>(source));
         }
         else if (source->IsA<FogVolume>())
         {
-            task = bakerSubsystem->EnqueueBake(activeLayer->bakeLayer, StaticCast<FogVolume>(source));
+            task = bakerSubsystem->EnqueueBake(activeSwatch->bakeLayer, StaticCast<FogVolume>(source));
         }
 
         if (task.IsValid())
@@ -150,8 +132,8 @@ void GenerateLightmapsEditorTask::Start()
 
     if (numEnqueued == 0)
     {
-        HYP_LOG(Editor, Error, "No bakes were enqueued for {} source(s); ensure they belong to the active layer '{}' and have no bake currently running",
-            m_sources.Size(), activeLayer->name);
+        HYP_LOG(Editor, Error, "No bakes were enqueued for {} source(s); ensure they belong to the active swatch '{}' and have no bake currently running",
+            m_sources.Size(), activeSwatch->name);
     }
 }
 
@@ -278,12 +260,12 @@ void GenerateBentNormalsEditorTask::Start()
 
     const uint32 bentNormalOnlyMask = 1u << uint32(Baking::LightmapShadingType::BENT_NORMAL);
 
-    Handle<Layer> activeLayer = m_world->GetActiveLayer();
-    Assert(activeLayer.IsValid());
+    Handle<Swatch> activeSwatch = m_world->GetActiveSwatch();
+    Assert(activeSwatch.IsValid());
 
-    if (!activeLayer.IsValid())
+    if (!activeSwatch.IsValid())
     {
-        HYP_LOG(Editor, Warning, "Active layer was not valid?!?");
+        HYP_LOG(Editor, Warning, "Active swatch was not valid?!?");
 
         return;
     }
@@ -292,15 +274,7 @@ void GenerateBentNormalsEditorTask::Start()
 
     for (const Handle<LightmapVolume>& volume : m_volumes)
     {
-        if (!ShouldBakeEntity(*activeLayer, *m_world, *volume))
-        {
-            HYP_LOG(Editor, Warning, "Skipping bent normals bake for {}: it is not in the active layer '{}'",
-                volume->Id(), activeLayer->name);
-
-            continue;
-        }
-
-        Task<void> task = lightmapperSubsystem->EnqueueBake(activeLayer->bakeLayer, volume, bentNormalOnlyMask);
+        Task<void> task = lightmapperSubsystem->EnqueueBake(activeSwatch->bakeLayer, volume, bentNormalOnlyMask);
 
         if (task.IsValid())
         {
@@ -317,8 +291,8 @@ void GenerateBentNormalsEditorTask::Start()
 
     if (numEnqueued == 0)
     {
-        HYP_LOG(Editor, Error, "No bent normals bakes were enqueued for {} volume(s); ensure they belong to the active layer '{}' and have no bake currently running",
-            m_volumes.Size(), activeLayer->name);
+        HYP_LOG(Editor, Error, "No bent normals bakes were enqueued for {} volume(s); ensure they belong to the active swatch '{}' and have no bake currently running",
+            m_volumes.Size(), activeSwatch->name);
     }
 }
 

@@ -10,11 +10,12 @@
 #include <Scene/Scene.hpp>
 #include <Scene/World.hpp>
 #include <Scene/Node.hpp>
+#include <Scene/Swatch.hpp>
 #include <Scene/DetachedScene.hpp>
 
 #include <Scene/EntityManager.hpp>
 #include <Scene/EntityTag.hpp>
-#include <Scene/Systems/LayerOverrideSystem.hpp>
+#include <Scene/Systems/SwatchOverrideSystem.hpp>
 
 #include <Core/Utilities/GlobalContext.hpp>
 
@@ -25,7 +26,7 @@
 #include <Scene/Components/VisibilityStateComponent.hpp>
 #include <Scene/Components/BoundingBoxComponent.hpp>
 #include <Scene/Components/LightmapElementComponent.hpp>
-#include <Scene/Components/LayerOverridesComponent.hpp>
+#include <Scene/Components/SwatchOverridesComponent.hpp>
 
 #include <Scripting/EntityScripting.hpp>
 
@@ -61,7 +62,7 @@ Entity::Entity(Name name)
       m_entityManager(nullptr),
       m_renderProxyVersion(0),
       m_transformChanged(false),
-      m_layerMask {}
+      m_layersMask {}
 {
 }
 
@@ -93,7 +94,7 @@ void Entity::AddToLayer(LayerId layerId)
         return;
     }
 
-    m_layerMask.Set(uint32(layerId), true);
+    m_layersMask.Set(uint32(layerId), true);
 
     SetNeedsRenderProxyUpdate();
     MarkDirty();
@@ -106,7 +107,7 @@ void Entity::RemoveFromLayer(LayerId layerId)
         return;
     }
 
-    m_layerMask.Set(uint32(layerId), false);
+    m_layersMask.Set(uint32(layerId), false);
 
     SetNeedsRenderProxyUpdate();
     MarkDirty();
@@ -168,6 +169,7 @@ void Entity::RemoveFromLayerByName(Name layerName)
 
     RemoveFromLayer(layer->layerId);
 }
+
 Handle<Node> Entity::Clone() const
 {
     // Clone Node base
@@ -207,13 +209,13 @@ Handle<Node> Entity::Clone() const
         Array<Name> serializedLayers = SerializeLayers();
         cloned->DeserializeLayers(serializedLayers);
 
-        // The LayerOverridesComponent is excluded from component serialization, so copy it explicitly.
-        if (LayerOverridesComponent* overrides = entityManager->TryGetComponent<LayerOverridesComponent>(this))
+        // The SwatchOverridesComponent is excluded from component serialization, so copy it explicitly.
+        if (SwatchOverridesComponent* overrides = entityManager->TryGetComponent<SwatchOverridesComponent>(this))
         {
-            LayerOverridesComponent overridesCopy;
+            SwatchOverridesComponent overridesCopy;
             overridesCopy.sets = overrides->sets;
 
-            cloned->AddComponent<LayerOverridesComponent>(std::move(overridesCopy));
+            cloned->AddComponent<SwatchOverridesComponent>(std::move(overridesCopy));
         }
     }
 
@@ -229,22 +231,21 @@ void Entity::Init()
 
     SetReady(true);
 
-    FlushPendingLayerOverrides();
+    FlushPendingSwatchOverrides();
 }
 
-void Entity::SetPendingLayerOverrides(Array<EntityLayerOverrideSet>&& sets)
+void Entity::SetPendingSwatchOverrides(Array<EntitySwatchOverrideSet>&& sets)
 {
-    auto& pendingSets = m_entityInitInfo.pendingLayerOverrides;
+    auto& pendingSets = m_entityInitInfo.pendingSwatchOverrides;
 
     if (pendingSets.Empty())
     {
         pendingSets.Reserve(sets.Size());
     }
 
-    for (EntityLayerOverrideSet& set : sets)
+    for (EntitySwatchOverrideSet& set : sets)
     {
-        // scenes may carry a "Default" set from before we changed "Default" == Base value set. drop it.
-        if (IsDefaultLayer(set.layerName))
+        if (IsDefaultSwatch(set.swatchName))
         {
             continue;
         }
@@ -253,9 +254,9 @@ void Entity::SetPendingLayerOverrides(Array<EntityLayerOverrideSet>&& sets)
     }
 }
 
-void Entity::FlushPendingLayerOverrides()
+void Entity::FlushPendingSwatchOverrides()
 {
-    auto& pendingSets = m_entityInitInfo.pendingLayerOverrides;
+    auto& pendingSets = m_entityInitInfo.pendingSwatchOverrides;
 
     if (pendingSets.Empty())
     {
@@ -270,29 +271,29 @@ void Entity::FlushPendingLayerOverrides()
         return;
     }
 
-    if (LayerOverridesComponent* existing = entityManager->TryGetComponent<LayerOverridesComponent>(this))
+    if (SwatchOverridesComponent* existing = entityManager->TryGetComponent<SwatchOverridesComponent>(this))
     {
         existing->sets.Clear();
 
-        for (EntityLayerOverrideSet& set : pendingSets)
+        for (EntitySwatchOverrideSet& set : pendingSets)
         {
             existing->sets.PushBack(std::move(set));
         }
 
-        existing->appliedLayer = Name::Invalid();
+        existing->appliedSwatch = Name::Invalid();
         existing->baseSnapshot.Clear();
     }
     else
     {
-        LayerOverridesComponent component;
+        SwatchOverridesComponent component;
         component.sets.Reserve(pendingSets.Size());
 
-        for (EntityLayerOverrideSet& set : pendingSets)
+        for (EntitySwatchOverrideSet& set : pendingSets)
         {
             component.sets.PushBack(std::move(set));
         }
 
-        entityManager->AddComponent<LayerOverridesComponent>(this, std::move(component));
+        entityManager->AddComponent<SwatchOverridesComponent>(this, std::move(component));
     }
 
     // Stashed values have been consumed; release the memory they held.
@@ -433,20 +434,20 @@ void Entity::OnAddedToWorld(World* world)
         }
     }
 
-    // Apply property overrides for the World's active layer, if any
-    if (LayerOverrideSystem* layerOverrideSystem = world->GetSystem<LayerOverrideSystem>())
+    // Apply property overrides for the World's active Swatch, if any
+    if (SwatchOverrideSystem* swatchOverrideSystem = world->GetSystem<SwatchOverrideSystem>())
     {
-        layerOverrideSystem->OnEntityAddedToWorld(this);
+        swatchOverrideSystem->OnEntityAddedToWorld(this);
     }
 }
 
 void Entity::OnRemovedFromWorld(World* world)
 {
     // Clear our the names list
-    m_entityInitInfo.layerNames.SetCapacity(m_entityInitInfo.layerNames.Size() + m_layerMask.CountOnes());
-    
-    // init layerNames as we otherwise won't be able to reach the layers we're attached to
-    for (uint64 bit : m_layerMask)
+    m_entityInitInfo.layerNames.SetCapacity(m_entityInitInfo.layerNames.Size() + m_layersMask.CountOnes());
+
+    // init layerNames as we otherwise won't be able to reach the swatches we're attached to
+    for (uint64 bit : m_layersMask)
     {
         const Handle<Layer>& layer = world->TryGetLayerById(LayerId(bit));
 
@@ -465,8 +466,8 @@ void Entity::OnRemovedFromWorld(World* world)
         m_entityInitInfo.layerNames.PushBack(layer->name);
     }
 
-    // zero out the transient layer mask bits
-    m_layerMask = {};
+    // zero out the transient Layerid mask bits
+    m_layersMask = {};
 }
 
 void Entity::OnAddedToScene(Scene* scene)
@@ -1032,7 +1033,7 @@ Array<Name> Entity::SerializeLayers() const
         return result;
     }
 
-    for (uint64 bit : m_layerMask)
+    for (uint64 bit : m_layersMask)
     {
         const Handle<Layer>& layer = world->TryGetLayerById(LayerId(bit));
 
@@ -1075,7 +1076,7 @@ void Entity::DeserializeLayers(const Array<Name>& layerNames)
 
         if (!layer)
         {
-            HYP_LOG(Serialization, Warning, "Entity {} references layer '{}' which does not exist on World '{}'",
+            HYP_LOG(Serialization, Warning, "Entity {} references Layer '{}' which does not exist on World '{}'",
                 GetName(),
                 layerName,
                 world->GetName());
@@ -1084,7 +1085,7 @@ void Entity::DeserializeLayers(const Array<Name>& layerNames)
         }
 
         const LayerId layerId = layer->layerId;
-        
+
         if (uint32(layerId) >= MaxLayersPerWorld)
         {
             HYP_LOG(Serialization, Warning, "Layer '{}' has invalid LayerId {}", layerName, uint32(layerId));
@@ -1092,7 +1093,7 @@ void Entity::DeserializeLayers(const Array<Name>& layerNames)
             continue;
         }
 
-        m_layerMask.Set(uint32(layerId), true);
+        m_layersMask.Set(uint32(layerId), true);
     }
 }
 

@@ -23,7 +23,8 @@
 
 #include <Scene/Node.hpp>
 #include <Scene/EntityTag.hpp>
-#include <Scene/Components/LayerOverridesComponent.hpp>
+#include <Scene/Layer.hpp>
+#include <Scene/Components/SwatchOverridesComponent.hpp>
 
 namespace Hyperion {
 
@@ -44,7 +45,7 @@ struct EntityInitInfo
     FatArray<Name, InlineAllocator<4, SceneAllocator>> layerNames;
 
     // @TODO: Can we remove? Just use component..?
-    Array<EntityLayerOverrideSet, SceneAllocator> pendingLayerOverrides;
+    Array<EntitySwatchOverrideSet, SceneAllocator> pendingSwatchOverrides;
     
     bool receivesUpdate = false;
     bool canEverUpdate = true;
@@ -108,14 +109,20 @@ public:
     HYP_METHOD()
     HYP_FORCE_INLINE bool HasNoLayers() const
     {
-        return m_layerMask.CountOnes() == 0;
+        return m_layersMask.CountOnes() == 0;
     }
 
     HYP_METHOD()
     HYP_FORCE_INLINE bool IsInLayer(LayerId layerId) const
     {
         return uint32(layerId) < MaxLayersPerWorld
-            && m_layerMask.Test(uint32(layerId));
+            && m_layersMask.Test(uint32(layerId));
+    }
+
+    HYP_METHOD()
+    HYP_FORCE_INLINE bool IsInAnyLayers(const LayersMask& layerIds) const
+    {
+        return (m_layersMask & layerIds).CountOnes();
     }
 
     HYP_METHOD()
@@ -133,10 +140,10 @@ public:
     HYP_METHOD()
     void RemoveFromLayerByName(Name layerName);
 
-    //-- Layer overrides --
+    //-- Swatch overrides --
 
-    void SetPendingLayerOverrides(Array<EntityLayerOverrideSet>&& sets);
-    void FlushPendingLayerOverrides();
+    void SetPendingSwatchOverrides(Array<EntitySwatchOverrideSet>&& sets);
+    void FlushPendingSwatchOverrides();
 
     //-- Tick --
 
@@ -239,7 +246,7 @@ private:
     bool m_transformChanged : 1;
 
     HYP_FIELD(Transient)
-    BitField<MaxLayersPerWorld> m_layerMask;
+    LayersMask m_layersMask;
 
     //--
 };

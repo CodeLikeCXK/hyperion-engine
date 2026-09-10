@@ -11,13 +11,13 @@
 #include <Core/Reflection/ObjectBase.hpp>
 #include <Core/Reflection/Handle.hpp>
 
+#include <Core/Utilities/BitField.hpp>
+
 #include <Core/Name/Name.hpp>
 
 #include <Core/Util.hpp>
+#include <Core/Constants.hpp>
 
-#ifdef HYP_EDITOR
-#include <Baking/BakeLayer.hpp>
-#endif // HYP_EDITOR
 
 namespace Hyperion {
 
@@ -31,6 +31,12 @@ HYP_FORCE_INLINE bool IsDefaultLayer(Name layerName)
     return layerName == g_defaultLayerName;
 }
 
+HYP_STRUCT()
+struct LayersMask : BitField<MaxLayersPerWorld>
+{
+    HYP_STRUCT_BODY(LayersMask);
+};
+
 HYP_CLASS()
 class ENGINE_API Layer final : public ObjectBase
 {
@@ -43,19 +49,11 @@ public:
     HYP_FIELD(Property = "LayerId", Serialize)
     LayerId layerId = InvalidLayerId;
 
-#ifdef HYP_EDITOR
-    HYP_FIELD(Property = "BakeLayer", EditorOnly, Serialize)
-    Baking::BakeLayer bakeLayer;
-#endif // HYP_EDITOR
-
     Layer() = default;
 
     Layer(Name name, LayerId layerId)
         : name(name),
           layerId(layerId)
-#ifdef HYP_EDITOR
-         , bakeLayer(name)
-#endif // HYP_EDITOR
     {
     }
 };
