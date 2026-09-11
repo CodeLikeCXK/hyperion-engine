@@ -417,7 +417,7 @@ static TResult<Array<Pair<String, ClassAttributeValue>>> BuildClassAttributes(co
 template <typename E, typename = std::enable_if_t<std::is_enum_v<E>>>
 static TResult<Pair<E, Array<Pair<String, ClassAttributeValue>>>> ParseHypMacro(
     const Map<String, E>& usableMacros,
-    const String& line,
+    const String& source,
     size_t& outStartIndex,
     size_t& outEndIndex,
     bool requireParens = true)
@@ -425,90 +425,228 @@ static TResult<Pair<E, Array<Pair<String, ClassAttributeValue>>>> ParseHypMacro(
     outStartIndex = String::NotFound;
     outEndIndex = String::NotFound;
 
-    for (const Pair<String, E>& it : usableMacros)
+    // find the next occurrence of \p name at or after \p offset
+    auto findNextOccurrence = [&source](const String& name, size_t offset) -> size_t
     {
-        size_t macroStartIndex = line.FindFirstIndex(it.first);
-
-        if (macroStartIndex != String::NotFound)
+        if (offset >= source.Length())
         {
-            Array<Pair<String, ClassAttributeValue>> attributes;
+            return String::NotFound;
+        }
 
-            outStartIndex = macroStartIndex;
-            outEndIndex = outStartIndex + it.first.Length();
+        const size_t relativeIndex = source.Substr(offset).FindFirstIndex(name);
 
-            int parenIndex = -1;
+        return relativeIndex != String::NotFound
+            ? offset + relativeIndex
+            : String::NotFound;
+    };
 
-            // skip whitespace after macro name
-            for (size_t i = outEndIndex; i < line.Length(); i++)
+    // ensure the match is not part of a longer ident
+    auto isValidOccurrence = [&source](size_t index, size_t nameLength) -> bool
+    {
+        auto isIdentifierChar = [&source](size_t charIndex) -> bool
+        {
+            if (charIndex >= source.Length())
             {
-                const utf::Char32 ch = line.GetChar(i);
-                if (ch == ' ' || ch == '\t')
-                {
-                    outEndIndex++;
-                }
-                else if (ch == '(')
-                {
-                    parenIndex = int(i - outEndIndex);
-                    break;
-                }
-                else
-                {
-                    break;
-                }
+                return false;
             }
 
-            if (parenIndex == -1)
-            {
-                if (requireParens)
-                {
-                    // Must have parenthesis to be considered an invocation
-                    break;
-                }
+            const utf::Char32 ch = source.GetChar(charIndex);
 
-                // Otherwise, empty attributes are used
+            return utf::IsAlphabetical(ch) || utf::IsDecimal(ch) || ch == '_';
+        };
+
+        return !isIdentifierChar(index - 1) && !isIdentifierChar(index + nameLength);
+    };
+
+    size_t searchOffset = 0;
+
+    while (true)
+    {
+        const Pair<String, E>* bestMatch = nullptr;
+        size_t bestIndex = String::NotFound;
+
+        for (const Pair<String, E>& it : usableMacros)
+        {
+            size_t occurrenceIndex = findNextOccurrence(it.first, searchOffset);
+
+            while (occurrenceIndex != String::NotFound && !isValidOccurrence(occurrenceIndex, it.first.Size()))
+            {
+                occurrenceIndex = findNextOccurrence(it.first, occurrenceIndex + it.first.Size());
+            }
+
+            if (occurrenceIndex != String::NotFound && (bestMatch == nullptr || occurrenceIndex < bestIndex))
+            {
+                bestMatch = &it;
+                bestIndex = occurrenceIndex;
+            }
+        }
+
+        if (bestMatch == nullptr)
+        {
+            break;
+        }
+
+        const String& macroName = bestMatch->first;
+
+        Array<Pair<String, ClassAttributeValue>> attributes;
+
+        outStartIndex = bestIndex;
+        outEndIndex = bestIndex + macroName.Size();
+
+        int parenIndex = -1;
+
+        for (size_t i = outEndIndex; i < source.Length(); i++)
+        {
+            const utf::Char32 ch = source.GetChar(i);
+            if (ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n')
+            {
+                outEndIndex++;
+            }
+            else if (ch == '(')
+            {
+                parenIndex = int(i - outEndIndex);
+                break;
             }
             else
             {
-                outEndIndex = outEndIndex + parenIndex + 1;
+                break;
+            }
+        }
 
-                int parenDepth = 1;
-                String attributesString;
+        if (parenIndex == -1)
+        {
+            if (requireParens)
+            {
+                searchOffset = bestIndex + macroName.Size();
 
-                for (; outEndIndex < line.Length(); outEndIndex++)
-                {
-                    const utf::Char32 ch = line.GetChar(outEndIndex);
-                    if (ch == '(')
-                    {
-                        parenDepth++;
-                    }
-                    else if (ch == ')')
-                    {
-                        parenDepth--;
-
-                        if (parenDepth <= 0)
-                        {
-                            outEndIndex++; // Include the closing parenthesis
-                            break;
-                        }
-                    }
-                    else
-                    {
-                        attributesString.Append(ch);
-                    }
-                }
-
-                auto buildAttributesResult = BuildClassAttributes(attributesString);
-
-                if (buildAttributesResult.HasError())
-                {
-                    return buildAttributesResult.GetError();
-                }
-
-                attributes = buildAttributesResult.GetValue();
+                continue;
             }
 
-            return Pair<E, Array<Pair<String, ClassAttributeValue>>> { it.second, attributes };
+            return Pair<E, Array<Pair<String, ClassAttributeValue>>> { bestMatch->second, {} };
         }
+
+        outEndIndex = outEndIndex + parenIndex + 1;
+
+        int parenDepth = 1;
+        String attributesString;
+
+        bool isClosed = false;
+        bool isInString = false;
+        bool isEscaped = false;
+
+        for (; outEndIndex < source.Length(); outEndIndex++)
+        {
+            const utf::Char32 ch = source.GetChar(outEndIndex);
+
+            if (isInString)
+            {
+                attributesString.Append(ch);
+
+                if (isEscaped)
+                {
+                    isEscaped = false;
+                }
+                else if (ch == '\\')
+                {
+                    isEscaped = true;
+                }
+                else if (ch == '"')
+                {
+                    isInString = false;
+                }
+
+                continue;
+            }
+
+            if (ch == '"')
+            {
+                isInString = true;
+                attributesString.Append(ch);
+
+                continue;
+            }
+
+            if (ch == '/' && outEndIndex + 1 < source.Length() && source.GetChar(outEndIndex + 1) == '/')
+            {
+                // line comment; skip to end of line
+                while (outEndIndex < source.Length() && source.GetChar(outEndIndex) != '\n')
+                {
+                    outEndIndex++;
+                }
+
+                attributesString.Append(' ');
+
+                continue;
+            }
+
+            if (ch == '/' && outEndIndex + 1 < source.Length() && source.GetChar(outEndIndex + 1) == '*')
+            {
+                // block comment; skip to closing */
+                outEndIndex += 2;
+
+                while (outEndIndex + 1 < source.Length()
+                    && !(source.GetChar(outEndIndex) == '*' && source.GetChar(outEndIndex + 1) == '/'))
+                {
+                    outEndIndex++;
+                }
+
+                if (outEndIndex < source.Length())
+                {
+                    outEndIndex++;
+                }
+
+                attributesString.Append(' ');
+
+                continue;
+            }
+
+            if (ch == '\r')
+            {
+                continue;
+            }
+
+            if (ch == '\n')
+            {
+                // collapse newlines to spaces so attribute lists may span multiple lines
+                attributesString.Append(' ');
+
+                continue;
+            }
+
+            if (ch == '(')
+            {
+                parenDepth++;
+            }
+            else if (ch == ')')
+            {
+                parenDepth--;
+
+                if (parenDepth <= 0)
+                {
+                    outEndIndex++; // Include the closing parenthesis
+                    isClosed = true;
+                    break;
+                }
+            }
+
+            attributesString.Append(ch);
+        }
+
+        if (!isClosed)
+        {
+            return HYP_MAKE_ERROR(Error, "Unclosed parenthesis in {}() macro invocation", macroName);
+        }
+
+        auto buildAttributesResult = BuildClassAttributes(attributesString);
+
+        if (buildAttributesResult.HasError())
+        {
+            return buildAttributesResult.GetError();
+        }
+
+        attributes = buildAttributesResult.GetValue();
+
+        return Pair<E, Array<Pair<String, ClassAttributeValue>>> { bestMatch->second, attributes };
     }
 
     return Pair<E, Array<Pair<String, ClassAttributeValue>>> { E::None, {} };
@@ -539,12 +677,19 @@ static TResult<Array<ClassDefinition>, AnalyzerError> BuildClasses(const Analyze
 
     for (size_t i = 0; i < lines.Size(); i++)
     {
+        if (lines[i].FindFirstIndex("HYP_") == String::NotFound)
+        {
+            continue;
+        }
+
         ClassDefinition classDefinition;
 
-        size_t macroStartIndex;
-        size_t macroEndIndex;
+        size_t macroStartIndex = String::NotFound;
+        size_t macroEndIndex = String::NotFound;
 
-        auto parseMacroResult = ParseHypMacro(s_classDefinitionTypes, lines[i], macroStartIndex, macroEndIndex, true);
+        const String remainingContent = String::Join(lines.Slice(i, lines.Size()), '\n');
+
+        auto parseMacroResult = ParseHypMacro(s_classDefinitionTypes, remainingContent, macroStartIndex, macroEndIndex, true);
 
         if (parseMacroResult.HasError())
         {
@@ -555,6 +700,15 @@ static TResult<Array<ClassDefinition>, AnalyzerError> BuildClasses(const Analyze
         {
             // no match; continue
             continue;
+        }
+
+        // advance to the line the macro starts on; macro definitions may span multiple lines
+        for (size_t pos = 0; pos < macroStartIndex && pos < remainingContent.Size(); pos++)
+        {
+            if (remainingContent.GetChar(pos) == '\n')
+            {
+                i++;
+            }
         }
 
         // look back to build the namespace for the class
@@ -928,10 +1082,17 @@ static TResult<Array<MemberDef>, AnalyzerError> BuildClassMembers(const Analyzer
             continue;
         }
 
-        size_t macroStartIndex;
-        size_t macroEndIndex;
+        if (trimmedLine.FindFirstIndex("HYP_") == String::NotFound)
+        {
+            continue;
+        }
 
-        auto parseMacroResult = ParseHypMacro(s_memberDefinitionTypes, line, macroStartIndex, macroEndIndex, false);
+        size_t macroStartIndex = String::NotFound;
+        size_t macroEndIndex = String::NotFound;
+
+        const String remainingContent = String::Join(lines.Slice(i, lines.Size()), '\n');
+
+        auto parseMacroResult = ParseHypMacro(s_memberDefinitionTypes, remainingContent, macroStartIndex, macroEndIndex, false);
 
         if (parseMacroResult.HasError())
         {
@@ -941,6 +1102,15 @@ static TResult<Array<MemberDef>, AnalyzerError> BuildClassMembers(const Analyzer
         if (parseMacroResult.GetValue().first == MemberType::None)
         {
             continue;
+        }
+
+        // advance to the line the macro starts on; macro definitions may span multiple lines
+        for (size_t pos = 0; pos < macroStartIndex && pos < remainingContent.Size(); pos++)
+        {
+            if (remainingContent.GetChar(pos) == '\n')
+            {
+                i++;
+            }
         }
 
         MemberDef& result = results.EmplaceBack();
@@ -967,8 +1137,7 @@ static TResult<Array<MemberDef>, AnalyzerError> BuildClassMembers(const Analyzer
             continue;
         }
 
-        const String contentToEnd = String(line.Substr(macroEndIndex)) + "\n" + String::Join(lines.Slice(i + 1, lines.Size()), '\n');
-        ParseInnerContent(contentToEnd, result.source);
+        ParseInnerContent(remainingContent.Substr(macroEndIndex), result.source);
 
         SharedPtr<ASTMemberDecl> decl;
 
