@@ -36,6 +36,8 @@
 
 #ifndef HYP_SHIPPING
 #define HYP_RHI_DEBUG_NAMES 1
+#define HYP_DX12_ENABLE_DRED 1
+#define HYP_DX12_ENABLE_DEBUG_LAYER 1
 #endif // HYP_SHIPPING
 
 namespace Hyperion {
