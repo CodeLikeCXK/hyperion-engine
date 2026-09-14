@@ -143,6 +143,12 @@ struct SArray
     uint64 cap;
 };
 
+// Keep the generated binding ABI compatible with older CodeGen output. String
+// return bindings historically used ArrayView, while the current Strata ABI
+// uses SArray for the same data layout.
+template <class T>
+using ArrayView = SArray<T>;
+
 using SString = SArray<char>;
 
 template <class T>
