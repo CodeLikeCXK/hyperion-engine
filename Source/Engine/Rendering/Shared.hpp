@@ -53,14 +53,14 @@ extern uint32 GetBinding(const void* resource);
 } // namespace Resources
 
 HYP_ENUM()
-enum ImageUsage : uint8
+enum class ImageUsage : uint8
 {
-    IU_NONE = 0x0,
-    IU_SAMPLED = 0x1,
-    IU_STORAGE = 0x2,
-    IU_ATTACHMENT = 0x4,
-    IU_BLENDED = 0x8,
-    IU_EXTERNAL = 0x10
+    None = 0x0,
+    Sampled = 0x1,
+    Storage = 0x2,
+    Attachment = 0x4,
+    Blended = 0x8,
+    External = 0x10
 };
 
 HYP_MAKE_ENUM_FLAGS(ImageUsage);
@@ -71,14 +71,6 @@ enum class ImageSupport : uint8
     Attachment,
     ShaderResource,
     UnorderedAccess
-};
-
-HYP_ENUM()
-enum DefaultImageFormat : uint8
-{
-    DIF_NONE,
-    DIF_COLOR,
-    DIF_DEPTH
 };
 
 HYP_ENUM()
@@ -187,46 +179,46 @@ inline constexpr bool operator>=(TextureFormat a, TextureFormat b)
 }
 
 HYP_ENUM()
-enum TextureFilterMode : uint8
+enum class TextureFilterMode : uint8
 {
-    TFM_NEAREST,
-    TFM_LINEAR,
-    TFM_NEAREST_LINEAR,
-    TFM_NEAREST_MIPMAP,
-    TFM_LINEAR_MIPMAP,
-    TFM_MINMAX_MIPMAP
+    Nearest,
+    Linear,
+    NearestLinear,
+    NearestMipmap,
+    LinearMipmap,
+    MinMaxMipmap
 };
 
 HYP_ENUM()
-enum TextureWrapMode : uint8
+enum class TextureWrapMode : uint8
 {
-    TWM_CLAMP_TO_EDGE,
-    TWM_CLAMP_TO_BORDER,
-    TWM_REPEAT
+    ClampToEdge,
+    ClampToBorder,
+    Repeat
 };
 
 HYP_ENUM()
-enum ResourceState : uint8
+enum class ResourceState : uint8
 {
-    RS_UNDEFINED,
-    RS_PRE_INITIALIZED,
-    RS_COMMON,
-    RS_VERTEX_BUFFER,
-    RS_CONSTANT_BUFFER,
-    RS_INDEX_BUFFER,
-    RS_RENDER_TARGET,
-    RS_UNORDERED_ACCESS,
-    RS_DEPTH_STENCIL,
-    RS_SHADER_RESOURCE,
-    RS_STREAM_OUT,
-    RS_INDIRECT_ARG,
-    RS_COPY_DST,
-    RS_COPY_SRC,
-    RS_RESOLVE_DST,
-    RS_RESOLVE_SRC,
-    RS_PRESENT,
-    RS_READ_GENERIC,
-    RS_PREDICATION
+    Undefined,
+    PreInitialized,
+    Common,
+    VertexBuffer,
+    ConstantBuffer,
+    IndexBuffer,
+    RenderTarget,
+    UnorderedAccess,
+    DepthStencil,
+    ShaderResource,
+    StreamOut,
+    IndirectArg,
+    CopyDst,
+    CopySrc,
+    ResolveDst,
+    ResolveSrc,
+    Present,
+    ReadGeneric,
+    Predication
 };
 
 namespace TextureUtils {
@@ -487,31 +479,31 @@ struct TextureDesc
 
     static constexpr uint8 MaxMips = 16;
 
-    HYP_FIELD(Property = "Type", Serialize)
+    HYP_FIELD(Property = "Type", Serialize, EditEnabled = false)
     TextureType type = TextureType::Texture2D;
 
-    HYP_FIELD(Property = "Format", Serialize)
+    HYP_FIELD(Property = "Format", Serialize, EditEnabled = false)
     TextureFormat format = TextureFormat::RGBA8;
 
     HYP_FIELD(Property = "Extent", Serialize)
     Vec3u extent = Vec3u::One();
 
-    HYP_FIELD(Property = "MinFilterMode", Serialize)
-    TextureFilterMode filterModeMin = TFM_NEAREST;
+    HYP_FIELD(Property = "MinFilterMode", Serialize, Title = "Min Filter")
+    TextureFilterMode filterModeMin = TextureFilterMode::Nearest;
 
-    HYP_FIELD(Property = "MagFilterMode", Serialize)
-    TextureFilterMode filterModeMag = TFM_NEAREST;
+    HYP_FIELD(Property = "MagFilterMode", Serialize, Title = "Mag Filter")
+    TextureFilterMode filterModeMag = TextureFilterMode::Nearest;
 
-    HYP_FIELD(Property = "TextureWrapMode", Serialize)
-    TextureWrapMode wrapMode = TWM_CLAMP_TO_EDGE;
+    HYP_FIELD(Property = "TextureWrapMode", Serialize, Title = "Wrap Mode")
+    TextureWrapMode wrapMode = TextureWrapMode::ClampToEdge;
 
-    HYP_FIELD(Property = "NumLayers", Serialize)
+    HYP_FIELD(Property = "NumLayers", Serialize, Title = "Array Layer Count")
     uint16 numLayers = 1;
 
-    HYP_FIELD(Property = "ImageUsage", Serialize)
-    EnumFlags<ImageUsage> imageUsage = IU_SAMPLED;
+    HYP_FIELD(Property = "ImageUsage", Serialize, Editor = false)
+    EnumFlags<ImageUsage> imageUsage = ImageUsage::Sampled;
 
-    HYP_FIELD(Property = "MipOffsets", Serialize)
+    HYP_FIELD(Property = "MipOffsets", Serialize, Editor = false)
     FixedArray<uint32, MaxMips> mipOffsets = { 0 }; // first elem is the size of mip 0 (and offset of mip 1)
 
     HYP_FORCE_INLINE bool operator==(const TextureDesc& other) const = default;
@@ -519,9 +511,9 @@ struct TextureDesc
 
     HYP_FORCE_INLINE bool HasMipMaps() const
     {
-        return filterModeMin == TFM_NEAREST_MIPMAP
-            || filterModeMin == TFM_LINEAR_MIPMAP
-            || filterModeMin == TFM_MINMAX_MIPMAP;
+        return filterModeMin == TextureFilterMode::NearestMipmap
+            || filterModeMin == TextureFilterMode::LinearMipmap
+            || filterModeMin == TextureFilterMode::MinMaxMipmap;
     }
 
     uint8 NumMips() const
@@ -548,7 +540,7 @@ struct TextureDesc
 
     HYP_FORCE_INLINE bool IsBlended() const
     {
-        return imageUsage[IU_BLENDED];
+        return imageUsage[ImageUsage::Blended];
     }
 
     HYP_FORCE_INLINE bool IsTextureCube() const
@@ -696,22 +688,22 @@ enum class GpuBufferType : uint8
 };
 
 HYP_ENUM()
-enum GpuElemType : uint8
+enum class GpuElemType : uint8
 {
-    GET_UNSIGNED_BYTE,
-    GET_SIGNED_BYTE,
-    GET_UNSIGNED_SHORT,
-    GET_SIGNED_SHORT,
-    GET_UNSIGNED_INT,
-    GET_SIGNED_INT,
-    GET_FLOAT,
+    UnsignedByte,
+    SignedByte,
+    UnsignedShort,
+    SignedShort,
+    UnsignedInt,
+    SignedInt,
+    Float,
 
-    GET_MAX
+    Max
 };
 
 static inline constexpr uint32 GpuElemTypeSize(GpuElemType type)
 {
-    constexpr uint32 sizes[GET_MAX] = {
+    constexpr uint32 sizes[size_t(GpuElemType::Max)] = {
         1, 1,
         2, 2,
         4, 4,
@@ -722,30 +714,30 @@ static inline constexpr uint32 GpuElemTypeSize(GpuElemType type)
 }
 
 HYP_ENUM()
-enum FaceCullMode : uint8
+enum class FaceCullMode : uint8
 {
-    FCM_NONE,
-    FCM_BACK,
-    FCM_FRONT
+    None,
+    Back,
+    Front
 };
 
 HYP_ENUM()
-enum FillMode : uint8
+enum class FillMode : uint8
 {
-    FM_FILL,
-    FM_LINE
+    Fill,
+    Line
 };
 
 HYP_ENUM()
-enum Topology : uint8
+enum class Topology : uint8
 {
-    TOP_TRIANGLES,
-    TOP_TRIANGLE_FAN,
-    TOP_TRIANGLE_STRIP,
+    Triangles,
+    TriangleFan,
+    TriangleStrip,
 
-    TOP_LINES,
+    Lines,
 
-    TOP_POINTS
+    Points
 };
 
 HYP_ENUM()
@@ -889,61 +881,61 @@ struct BlendFunction
 };
 
 HYP_ENUM()
-enum RenderTargetType : uint8
+enum class RenderTargetType : uint8
 {
-    RTT_NONE = 0,
-    RTT_PRESENT,         /* for presentation on screen */
-    RTT_SHADER_RESOURCE, /* for use as a texture, sampled within in a shader */
-    RTT_MAX
+    None = 0,
+    Present,         /* for presentation on screen */
+    ShaderResource,  /* for use as a texture, sampled within in a shader */
+    Max
 };
 
 HYP_ENUM()
 enum class LoadOperation : uint8
 {
-    UNDEFINED,
-    NONE,
-    CLEAR,
-    LOAD
+    Undefined,
+    None,
+    Clear,
+    Load
 };
 
 HYP_ENUM()
 enum class StoreOperation : uint8
 {
-    UNDEFINED,
-    NONE,
-    STORE
+    Undefined,
+    None,
+    Store
 };
 
 HYP_ENUM()
-enum StencilCompareOp : uint8
+enum class StencilCompareOp : uint8
 {
-    SCO_ALWAYS,
-    SCO_NEVER,
-    SCO_EQUAL,
-    SCO_NOT_EQUAL
+    Always,
+    Never,
+    Equal,
+    NotEqual
 };
 
 HYP_ENUM()
-enum DepthCompareOp : uint8
+enum class DepthCompareOp : uint8
 {
-    DCO_LESS,
-    DCO_LESS_OR_EQUAL,
-    DCO_GREATER,
-    DCO_GREATER_OR_EQUAL,
-    DCO_EQUAL,
-    DCO_NOT_EQUAL,
-    DCO_ALWAYS,
-    DCO_NEVER
+    Less,
+    LessOrEqual,
+    Greater,
+    GreaterOrEqual,
+    Equal,
+    NotEqual,
+    Always,
+    Never
 };
 
 HYP_ENUM()
-enum StencilOp : uint8
+enum class StencilOp : uint8
 {
-    SO_KEEP,
-    SO_ZERO,
-    SO_REPLACE,
-    SO_INCREMENT,
-    SO_DECREMENT
+    Keep,
+    Zero,
+    Replace,
+    Increment,
+    Decrement
 };
 
 HYP_STRUCT()
@@ -952,16 +944,16 @@ struct StencilFunction
     HYP_STRUCT_BODY(StencilFunction);
 
     HYP_FIELD(Serialize)
-    StencilOp passOp = SO_REPLACE;
+    StencilOp passOp = StencilOp::Replace;
 
     HYP_FIELD(Serialize)
-    StencilOp failOp = SO_KEEP;
+    StencilOp failOp = StencilOp::Keep;
 
     HYP_FIELD(Serialize)
-    StencilOp depthFailOp = SO_KEEP;
+    StencilOp depthFailOp = StencilOp::Keep;
 
     HYP_FIELD(Serialize)
-    StencilCompareOp compareOp = SCO_ALWAYS;
+    StencilCompareOp compareOp = StencilCompareOp::Always;
 
     HYP_FORCE_INLINE bool operator==(const StencilFunction& other) const = default;
     HYP_FORCE_INLINE bool operator!=(const StencilFunction& other) const = default;
@@ -973,10 +965,10 @@ struct StencilFunction
 
     HYP_FORCE_INLINE bool IsSet() const
     {
-        return compareOp != SCO_ALWAYS
-            || passOp != SO_KEEP
-            || failOp != SO_KEEP
-            || depthFailOp != SO_KEEP;
+        return compareOp != StencilCompareOp::Always
+            || passOp != StencilOp::Keep
+            || failOp != StencilOp::Keep
+            || depthFailOp != StencilOp::Keep;
     }
 
     HYP_FORCE_INLINE HashCode GetHashCode() const
@@ -1391,16 +1383,16 @@ struct AttachmentDesc
 
         Memory::Zero(this, sizeof(AttachmentDesc));
 
-        loadOp = LoadOperation::CLEAR;
-        storeOp = StoreOperation::STORE;
+        loadOp = LoadOperation::Clear;
+        storeOp = StoreOperation::Store;
         format = TextureFormat::RGBA8;
     }
 
     AttachmentDesc(
         TextureType textureType,
         TextureFormat format,
-        LoadOperation loadOp = LoadOperation::CLEAR,
-        StoreOperation storeOp = StoreOperation::STORE)
+        LoadOperation loadOp = LoadOperation::Clear,
+        StoreOperation storeOp = StoreOperation::Store)
         : AttachmentDesc()
     {
         this->imageType = textureType;
@@ -1625,11 +1617,11 @@ struct VertexAttributeDefinition
 };
 
 HYP_ENUM()
-enum ShaderPropertyFlags : uint8
+enum class ShaderPropertyFlags : uint8
 {
-    SPF_NONE = 0x0,
-    SPF_VERTEX_ATTRIBUTE = 0x1,
-    SPF_PERMUTATION = 0x2
+    None = 0x0,
+    VertexAttribute = 0x1,
+    Permutation = 0x2
 };
 
 enum class ShaderPropertyId : uint32;
@@ -1657,18 +1649,18 @@ struct ShaderProperty
     HashCode cachedHashCode;
 
     ShaderProperty()
-        : flags(SPF_NONE)
+        : flags(ShaderPropertyFlags::None)
     {
     }
 
-    explicit ShaderProperty(Name name, ShaderPropertyFlags flags = SPF_NONE)
+    explicit ShaderProperty(Name name, ShaderPropertyFlags flags = ShaderPropertyFlags::None)
         : name(name),
           flags(flags)
     {
         cachedHashCode = GetHashCode();
     }
 
-    ShaderProperty(Name name, const Value& currentValue, ShaderPropertyFlags flags = SPF_NONE)
+    ShaderProperty(Name name, const Value& currentValue, ShaderPropertyFlags flags = ShaderPropertyFlags::None)
         : name(name),
           flags(flags),
           currentValue(currentValue)
@@ -1678,7 +1670,7 @@ struct ShaderProperty
 
     explicit ShaderProperty(VertexType vt)
         : name(CreateNameFromDynamicString(ANSIString("VT_") + VertexUtils::ToString(vt))),
-          flags(SPF_VERTEX_ATTRIBUTE),
+          flags(ShaderPropertyFlags::VertexAttribute),
           currentValue(Value(CreateNameFromDynamicString(VertexUtils::ToString(vt))))
     {
         cachedHashCode = GetHashCode();
@@ -1717,7 +1709,7 @@ struct ShaderProperty
           cachedHashCode(other.cachedHashCode)
     {
         other.name = Name();
-        other.flags = SPF_NONE;
+        other.flags = ShaderPropertyFlags::None;
         other.cachedHashCode = HashCode();
     }
 
@@ -1735,7 +1727,7 @@ struct ShaderProperty
         cachedHashCode = other.cachedHashCode;
 
         other.name = Name();
-        other.flags = SPF_NONE;
+        other.flags = ShaderPropertyFlags::None;
         other.cachedHashCode = HashCode();
 
         return *this;
@@ -1795,7 +1787,7 @@ struct ShaderProperty
 
     HYP_FORCE_INLINE bool IsPermutable() const
     {
-        return flags & SPF_PERMUTATION;
+        return (uint8(flags) & uint8(ShaderPropertyFlags::Permutation)) != 0;
     }
 
     HYP_FORCE_INLINE bool IsStatic() const
@@ -1805,7 +1797,7 @@ struct ShaderProperty
 
     HYP_FORCE_INLINE bool IsVertexAttribute() const
     {
-        return flags & SPF_VERTEX_ATTRIBUTE;
+        return (uint8(flags) & uint8(ShaderPropertyFlags::VertexAttribute)) != 0;
     }
 
     HYP_FORCE_INLINE bool IsOptionalVertexAttribute() const
@@ -1863,7 +1855,7 @@ public:
     {
         for (Name propKey : props)
         {
-            Set(ShaderProperty(propKey, SPF_PERMUTATION), true); // default to permutable
+            Set(ShaderProperty(propKey, ShaderPropertyFlags::Permutation), true); // default to permutable
         }
     }
 
@@ -1884,7 +1876,7 @@ public:
     {
         for (Name propKey : props)
         {
-            m_props.Insert(ShaderProperty(propKey, SPF_PERMUTATION)); // default to permutable
+            m_props.Insert(ShaderProperty(propKey, ShaderPropertyFlags::Permutation)); // default to permutable
         }
     }
 
@@ -1984,7 +1976,7 @@ public:
 
     ENGINE_API ShaderVariantPerms& Set(const ShaderProperty& property, bool enabled = true);
 
-    HYP_FORCE_INLINE ShaderVariantPerms& Set(Name name, bool enabled = true, ShaderPropertyFlags flags = SPF_NONE)
+    HYP_FORCE_INLINE ShaderVariantPerms& Set(Name name, bool enabled = true, ShaderPropertyFlags flags = ShaderPropertyFlags::None)
     {
         return Set(ShaderProperty(name, flags), enabled);
     }
@@ -2022,7 +2014,7 @@ public:
      *  so use them sparingly. (prefer value groups or static properties where appropriate) */
     ShaderVariantPerms& AddPermutation(Name key)
     {
-        const ShaderProperty shaderProperty(key, SPF_PERMUTATION);
+        const ShaderProperty shaderProperty(key, ShaderPropertyFlags::Permutation);
 
         const auto it = m_props.Find(shaderProperty);
 
@@ -2044,7 +2036,7 @@ public:
      *  Static properties are applied to every shader variant and do not create new permutations. */
     ShaderVariantPerms& AddStatic(Name key)
     {
-        const ShaderProperty shaderProperty(key, SPF_NONE);
+        const ShaderProperty shaderProperty(key, ShaderPropertyFlags::None);
 
         const auto it = m_props.Find(shaderProperty);
 
@@ -2066,7 +2058,7 @@ public:
      *  Static properties are applied to every shader variant and do not create new permutations. */
     ShaderVariantPerms& AddStatic(Name key, ShaderProperty::Value value)
     {
-        const ShaderProperty shaderProperty(key, value, SPF_NONE);
+        const ShaderProperty shaderProperty(key, value, ShaderPropertyFlags::None);
 
         const auto it = m_props.Find(shaderProperty);
 
@@ -2090,7 +2082,7 @@ public:
      *  shader variants generated compared to permutations. */
     ShaderVariantPerms& AddValueGroup(Name key, const Array<ShaderProperty::Value>& enumValues)
     {
-        ShaderProperty shaderProperty(key, SPF_NONE);
+        ShaderProperty shaderProperty(key, ShaderPropertyFlags::None);
 
         if (enumValues.Any())
         {
